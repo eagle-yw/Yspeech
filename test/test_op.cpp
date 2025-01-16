@@ -1,6 +1,9 @@
 #include "gtest/gtest.h"
 
+import std;
+import yspeech;
 
 TEST(TestOperator, TestVad) {
-    EXPECT_EQ(1, 1);
+    auto op = yspeech::OpVad();
+    op.load("./temp/models/vad");
 }
