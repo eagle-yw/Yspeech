@@ -22,6 +22,8 @@ target_sources(yspeech
     common/types.ixx
     operator/operator.cppm
     operator/op_vad.cppm
+    audio/audio.cppm
+    audio/audio_file.cppm
 )
 
 target_link_libraries(yspeech PRIVATE

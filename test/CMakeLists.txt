@@ -13,6 +13,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(test 
     test.cpp
     test_op.cpp
+    test_audio.cpp
 )
 
 target_link_libraries(test 

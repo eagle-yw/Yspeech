@@ -12,3 +12,6 @@ export import yspeech.Operator.Vad;
 export import yspeech.Context;
 
 export import yspeech.Pipeline;
+
+export import yspeech.Audio;
+export import yspeech.Audio.AudioFile;

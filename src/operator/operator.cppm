@@ -13,7 +13,7 @@ template <typename T>
 concept Operator = requires(T t) {
     { t.process(Context{}) } -> std::same_as<void>;
     { t.load(std::string_view{}) } -> std::same_as<void>;
-} && std::is_move_constructible_v<T> &&std::is_move_assignable_v<T> && !std::is_copy_constructible_v<T> && !std::is_copy_assignable_v<T>;
+} && NonCopyable<T> && Movable<T>;
 
 export class OperatorIface {
 public:
