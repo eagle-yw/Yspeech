@@ -15,3 +15,5 @@ export import yspeech.Pipeline;
 
 export import yspeech.Audio;
 export import yspeech.Audio.AudioFile;
+
+export import yspeech.Core.CircularBuffer;

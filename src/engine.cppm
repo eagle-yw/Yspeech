@@ -12,7 +12,7 @@ export class Engine {
 public:
     Engine() {
         std::cout << "Engine created" << std::endl;
-        operators_.emplace_back(OpVad());
+        operators_.push_back(OpVad());
     }
 
     ~Engine() {
@@ -23,7 +23,7 @@ public:
         std::cout << "Engine running" << std::endl;
         for(auto& op : operators_){
             auto context = Context();
-            op.process(context);
+            // op.process(context);
         }
     }
 

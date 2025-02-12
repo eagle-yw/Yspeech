@@ -19,6 +19,7 @@ target_sources(yspeech
     engine.cppm
     context.cppm
     pipeline.cppm
+    cicular_buffer.cppm
     common/types.ixx
     operator/operator.cppm
     operator/op_vad.cppm
@@ -30,3 +31,4 @@ target_link_libraries(yspeech PRIVATE
     ${ONNXRUNTIME_LIBRARY}
     nlohmann_json::nlohmann_json
 )
+

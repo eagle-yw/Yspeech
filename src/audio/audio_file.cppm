@@ -69,6 +69,7 @@ public:
     auto refNum() -> int {
         return ref_num_;
     }
+
     auto sampleRate() -> SampleRate {
         return sr_;
     }
@@ -80,6 +81,7 @@ public:
     auto refNum(int ref_num) -> void {
         ref_num_ = ref_num;
     }
+    
     auto sampleRate(SampleRate sr) -> void {
         sr_ = sr;
     }

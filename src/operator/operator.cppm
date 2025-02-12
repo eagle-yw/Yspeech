@@ -10,10 +10,11 @@ namespace yspeech {
 
 
 template <typename T>
-concept Operator = requires(T t) {
-    { t.process(Context{}) } -> std::same_as<void>;
-    { t.load(std::string_view{}) } -> std::same_as<void>;
-} && NonCopyable<T> && Movable<T>;
+concept Operator = requires(T t, Context& ctx, std::string_view sv) {
+    { t.load(sv) } -> std::same_as<void>;
+    { t.process(ctx) } -> std::same_as<void>;    
+    { t.register_info(ctx) } -> std::same_as<void>;
+}; //&& NonCopyable<T> && Movable<T>;
 
 export class OperatorIface {
 public:
@@ -25,8 +26,16 @@ public:
     OperatorIface(OperatorIface&&) noexcept = default;
     OperatorIface& operator=(OperatorIface&&) noexcept = default;
 
-    auto process(Context data) -> void {
-        self_->process(data);
+    auto load(std::string_view path) -> void {
+        self_->load(path);
+    }
+
+    auto process(Context& ctx) -> void {
+        self_->process(ctx);
+    }
+
+    auto register_info(Context& ctx) -> void {
+        self_->register_info(ctx);
     }
 
     template <typename T>
@@ -40,7 +49,9 @@ public:
 private:
     struct Concept {
         virtual ~Concept() = default;
-        virtual auto process(Context data) -> void = 0;
+        virtual auto load(std::string_view path) -> void = 0;
+        virtual auto process(Context& ctx) -> void = 0;
+        virtual auto register_info(Context& ctx) -> void = 0;
         virtual auto type() const -> const std::type_info& = 0;
     };
 
@@ -48,8 +59,16 @@ private:
     struct Model: Concept {        
         Model(T&& op): op_(std::move(op)) {}
 
-        auto process(Context data)->void override {
-            op_.process(data);
+        auto load(std::string_view path) -> void override {
+            op_.load(path);
+        }
+
+        auto process(Context& ctx)->void override {
+            op_.process(ctx);
+        }
+
+        auto register_info(Context& ctx)->void override {
+            op_.register_info(ctx);
         }
 
         auto type() const -> const std::type_info& override {
@@ -61,6 +80,7 @@ private:
     };
 
     std::unique_ptr<Concept> self_;
+
 };
 
 
