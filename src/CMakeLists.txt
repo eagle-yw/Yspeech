@@ -17,6 +17,12 @@ target_sources(yspeech
     yspeech/op/vad/vad.cppm
     yspeech/op/vad/silero_vad.cppm
     yspeech/op/audio/audio_input.cppm
+    yspeech/op/asr/asr_base.cppm
+    yspeech/op/asr/asr_paraformer.cppm
+    yspeech/op/asr/asr_whisper.cppm
+    yspeech/op/asr/asr_sensevoice.cppm
+    yspeech/op/feature/feature_extract.cppm
+    yspeech/op/feature/kaldi_fbank.cppm
     yspeech/pipeline_config.cppm
     yspeech/pipeline.cppm
     yspeech/pipeline_manager.cppm
@@ -24,6 +30,9 @@ target_sources(yspeech
     yspeech/engine.cppm
     yspeech/audio.cppm
     yspeech/audio/audio_file.cppm
+    yspeech/offline_asr.cppm
+    yspeech/streaming_asr.cppm
+    yspeech/speech_processor.cppm
     yspeech/yspeech.cppm
 )
 
@@ -32,6 +41,7 @@ target_link_libraries(yspeech
         onnxruntime
         taskflow
         glog::glog
+        kaldi-native-fbank-core
     PUBLIC
         nlohmann_json::nlohmann_json
 )

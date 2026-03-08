@@ -52,8 +52,14 @@ include(${CMAKE_SOURCE_DIR}/cmake/3rd/json.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/3rd/gtest.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/3rd/taskflow.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/3rd/glog.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/3rd/kaldi-native-fbank.cmake)
 
 include(cmake/3rd/onnxruntime.cmake)
 
 add_subdirectory(src)
 add_subdirectory(test)
+
+option(YSPEECH_BUILD_EXAMPLES "Build example programs" ON)
+if(YSPEECH_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()

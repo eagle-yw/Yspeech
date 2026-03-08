@@ -5,6 +5,7 @@
 #include <cmath>
 
 import yspeech.context;
+import yspeech.types;
 import yspeech.op.silero_vad;
 
 using namespace yspeech;
@@ -156,7 +157,7 @@ TEST_F(TestSileroVad, VadSegmentOutput) {
         EXPECT_GE(segments.size(), 0);
 
         for (const auto& seg : segments) {
-            EXPECT_GT(seg.end_time_ms, seg.start_time_ms);
+            EXPECT_GT(seg.end_ms, seg.start_ms);
             EXPECT_GE(seg.confidence, 0.0f);
             EXPECT_LE(seg.confidence, 1.0f);
         }

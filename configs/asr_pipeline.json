@@ -1,0 +1,213 @@
+{
+  "name": "ASR Recognition Pipeline",
+  "version": "1.0",
+  "description": "Speech recognition pipeline with multiple ASR model support",
+  "global": {
+    "properties": {
+      "model_root": "./models",
+      "sample_rate": 16000,
+      "log_level": "INFO"
+    }
+  },
+  "pipelines": [
+    {
+      "id": "paraformer_asr",
+      "name": "ParaFormer ASR Pipeline",
+      "description": "Chinese speech recognition using ParaFormer",
+      "max_concurrency": 2,
+      "input": {
+        "key": "audio_buffer",
+        "chunk_size": 16000
+      },
+      "output": {
+        "key": "asr_results"
+      },
+      "ops": [
+        {
+          "id": "audio_input",
+          "name": "AudioInput",
+          "params": {
+            "input_buffer_key": "audio_buffer",
+            "output_buffer_key": "audio_planar",
+            "num_channels": 1,
+            "buffer_capacity": 960000
+          },
+          "parallel": false
+        },
+        {
+          "id": "feature_extract",
+          "name": "FeatureExtract",
+          "params": {
+            "input_buffer_key": "audio_planar",
+            "output_key": "feature",
+            "num_mel_bins": 80,
+            "frame_length": 400,
+            "frame_shift": 160,
+            "sample_rate": 16000
+          },
+          "parallel": false,
+          "depends_on": ["audio_input"]
+        },
+        {
+          "id": "asr_paraformer",
+          "name": "AsrParaformer",
+          "params": {
+            "encoder_path": "${model_root}/paraformer/encoder.onnx",
+            "decoder_path": "${model_root}/paraformer/decoder.onnx",
+            "tokens_path": "${model_root}/paraformer/tokens.txt",
+            "language": "zh",
+            "sample_rate": 16000,
+            "num_threads": 4,
+            "input_buffer_key": "audio_planar",
+            "output_key": "asr"
+          },
+          "parallel": true,
+          "depends_on": ["feature_extract"]
+        }
+      ]
+    },
+    {
+      "id": "whisper_asr",
+      "name": "Whisper ASR Pipeline",
+      "description": "Multilingual speech recognition using Whisper",
+      "max_concurrency": 1,
+      "input": {
+        "key": "audio_buffer",
+        "chunk_size": 480000
+      },
+      "output": {
+        "key": "asr_results"
+      },
+      "ops": [
+        {
+          "id": "audio_input",
+          "name": "AudioInput",
+          "params": {
+            "input_buffer_key": "audio_buffer",
+            "output_buffer_key": "audio_planar",
+            "num_channels": 1,
+            "buffer_capacity": 960000
+          },
+          "parallel": false
+        },
+        {
+          "id": "asr_whisper",
+          "name": "AsrWhisper",
+          "params": {
+            "model_path": "${model_root}/whisper/whisper.onnx",
+            "tokens_path": "${model_root}/whisper/tokens.txt",
+            "language": "auto",
+            "task": "transcribe",
+            "detect_language": true,
+            "sample_rate": 16000,
+            "num_threads": 4,
+            "input_buffer_key": "audio_planar",
+            "output_key": "asr"
+          },
+          "parallel": true,
+          "depends_on": ["audio_input"]
+        }
+      ]
+    },
+    {
+      "id": "sensevoice_asr",
+      "name": "SenseVoice ASR Pipeline",
+      "description": "Multilingual ASR with emotion detection",
+      "max_concurrency": 2,
+      "input": {
+        "key": "audio_buffer",
+        "chunk_size": 16000
+      },
+      "output": {
+        "key": "asr_results"
+      },
+      "ops": [
+        {
+          "id": "audio_input",
+          "name": "AudioInput",
+          "params": {
+            "input_buffer_key": "audio_buffer",
+            "output_buffer_key": "audio_planar",
+            "num_channels": 1,
+            "buffer_capacity": 960000
+          },
+          "parallel": false
+        },
+        {
+          "id": "asr_sensevoice",
+          "name": "AsrSenseVoice",
+          "params": {
+            "model_path": "${model_root}/sensevoice/model.onnx",
+            "tokens_path": "${model_root}/sensevoice/tokens.txt",
+            "language": "auto",
+            "detect_emotion": true,
+            "detect_itn": true,
+            "sample_rate": 16000,
+            "num_threads": 4,
+            "input_buffer_key": "audio_planar",
+            "output_key": "asr"
+          },
+          "parallel": true,
+          "depends_on": ["audio_input"]
+        }
+      ]
+    },
+    {
+      "id": "vad_asr_pipeline",
+      "name": "VAD + ASR Pipeline",
+      "description": "Voice activity detection followed by ASR",
+      "max_concurrency": 2,
+      "input": {
+        "key": "audio_buffer",
+        "chunk_size": 512
+      },
+      "output": {
+        "key": "final_results"
+      },
+      "ops": [
+        {
+          "id": "audio_input",
+          "name": "AudioInput",
+          "params": {
+            "input_buffer_key": "audio_buffer",
+            "output_buffer_key": "audio_planar",
+            "num_channels": 1,
+            "buffer_capacity": 960000
+          },
+          "parallel": false
+        },
+        {
+          "id": "silero_vad",
+          "name": "SileroVad",
+          "params": {
+            "model_path": "${model_root}/vad/silero_vad.onnx",
+            "threshold": 0.5,
+            "sample_rate": 16000,
+            "input_buffer_key": "audio_planar",
+            "output_key": "vad",
+            "min_speech_duration_ms": 250,
+            "min_silence_duration_ms": 100
+          },
+          "parallel": true,
+          "depends_on": ["audio_input"]
+        },
+        {
+          "id": "asr_paraformer",
+          "name": "AsrParaformer",
+          "params": {
+            "encoder_path": "${model_root}/paraformer/encoder.onnx",
+            "decoder_path": "${model_root}/paraformer/decoder.onnx",
+            "tokens_path": "${model_root}/paraformer/tokens.txt",
+            "language": "zh",
+            "sample_rate": 16000,
+            "num_threads": 4,
+            "input_buffer_key": "audio_planar",
+            "output_key": "asr"
+          },
+          "parallel": true,
+          "depends_on": ["silero_vad"]
+        }
+      ]
+    }
+  ]
+}

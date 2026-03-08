@@ -13,12 +13,6 @@ import yspeech.types;
 
 namespace yspeech {
 
-export struct VadSegment {
-    float start_time_ms;
-    float end_time_ms;
-    float confidence;
-};
-
 export class OpSileroVad {
 public:
     static constexpr int WINDOW_SIZE = 512;
@@ -92,8 +86,8 @@ public:
 
         if (segment_finished_) {
             VadSegment segment{
-                .start_time_ms = current_segment_start_ms_,
-                .end_time_ms = current_segment_end_ms_,
+                .start_ms = static_cast<int64_t>(current_segment_start_ms_),
+                .end_ms = static_cast<int64_t>(current_segment_end_ms_),
                 .confidence = current_segment_confidence_
             };
 
@@ -105,7 +99,7 @@ public:
             ctx.set(output_key_ + "_segments", segments);
 
             log_info("VAD segment detected: [{:.0f}ms - {:.0f}ms], confidence={:.2f}",
-                     segment.start_time_ms, segment.end_time_ms, segment.confidence);
+                     segment.start_ms, segment.end_ms, segment.confidence);
 
             reset_segment_state();
         }

@@ -41,4 +41,50 @@ export struct AudioBufferConfig {
     std::size_t capacity_samples = static_cast<std::size_t>(16000) * 60;
 };
 
+export struct WordInfo {
+    std::string word;
+    float start_time_ms = 0.0f;
+    float end_time_ms = 0.0f;
+    float confidence = 0.0f;
+};
+
+export struct AsrResult {
+    std::string text;
+    float confidence = 0.0f;
+    float start_time_ms = 0.0f;
+    float end_time_ms = 0.0f;
+    std::vector<WordInfo> words;
+    std::string language = "unknown";
+    std::string emotion;
+};
+
+export struct VadSegment {
+    int64_t start_ms = 0;
+    int64_t end_ms = 0;
+    float confidence = 0.0f;
+};
+
+export struct ProcessingStats {
+    size_t audio_chunks_processed = 0;
+    size_t speech_segments_detected = 0;
+    size_t asr_results_generated = 0;
+    double processing_time_ms = 0.0;
+    double rtf = 0.0;
+    
+    std::string to_string() const {
+        return std::format(
+            "Stats: chunks={}, segments={}, results={}, time={}ms, RTF={:.2f}",
+            audio_chunks_processed,
+            speech_segments_detected,
+            asr_results_generated,
+            processing_time_ms,
+            rtf
+        );
+    }
+};
+
+export using ResultCallback = std::function<void(const AsrResult&)>;
+export using VadCallback = std::function<void(bool is_speech, int64_t start_ms, int64_t end_ms)>;
+export using StatusCallback = std::function<void(const std::string& status)>;
+
 }

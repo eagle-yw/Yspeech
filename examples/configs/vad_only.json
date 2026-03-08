@@ -1,0 +1,42 @@
+{
+  "name": "VAD Only Pipeline",
+  "version": "1.0",
+  "mode": "streaming",
+  "input": {
+    "type": "microphone",
+    "sample_rate": 16000,
+    "chunk_size": 1600
+  },
+  "output": {
+    "type": "callback",
+    "include_segments": true
+  },
+  "pipelines": [
+    {
+      "id": "vad_stage",
+      "name": "VAD Detection Stage",
+      "max_concurrency": 4,
+      "input": {
+        "key": "audio_buffer",
+        "chunk_size": 1600
+      },
+      "output": {
+        "key": "vad_results"
+      },
+      "ops": [
+        {
+          "id": "silero_vad",
+          "name": "SileroVad",
+          "params": {
+            "model_path": "${model_root}/silero_vad.onnx",
+            "threshold": 0.5,
+            "sample_rate": 16000,
+            "min_speech_duration_ms": 250,
+            "min_silence_duration_ms": 100
+          },
+          "parallel": true
+        }
+      ]
+    }
+  ]
+}

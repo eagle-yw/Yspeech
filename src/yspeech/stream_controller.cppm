@@ -25,12 +25,12 @@ public:
     ~StreamController() {
         stop();
     }
-
+    
     StreamController(const StreamController&) = delete;
     StreamController& operator=(const StreamController&) = delete;
     StreamController(StreamController&&) noexcept = delete;
     StreamController& operator=(StreamController&&) noexcept = delete;
-
+    
     void set_data_source(DataSource source) {
         data_source_ = std::move(source);
     }
@@ -53,13 +53,9 @@ public:
         running_ = true;
         ctx_ = &ctx;
         
-        input_thread_ = std::thread([this]() {
-            run_input_loop();
-        });
-        
         if (manager_) {
-            manager_thread_ = std::thread([this, &ctx]() {
-                manager_->run(ctx);
+            processing_thread_ = std::thread([this, &ctx]() {
+                run_processing_loop();
             });
         }
     }
@@ -73,18 +69,15 @@ public:
             ctx_->stop_data();
         }
         
-        if (input_thread_.joinable()) {
-            input_thread_.join();
-        }
-        
-        if (manager_thread_.joinable()) {
-            manager_thread_.join();
+        if (processing_thread_.joinable()) {
+            processing_thread_.join();
         }
     }
     
     bool is_running() const { return running_; }
     
     size_t chunks_pushed() const { return chunks_pushed_.load(); }
+    
     bool eof_reached() const { return eof_reached_.load(); }
 
 private:
@@ -98,35 +91,29 @@ private:
     std::atomic<bool> eof_reached_{false};
     std::atomic<size_t> chunks_pushed_{0};
     
-    std::thread input_thread_;
-    std::thread manager_thread_;
+    std::thread processing_thread_;
 
-    void run_input_loop() {
-        if (!data_source_ || !ctx_) {
-            log_error("StreamController: data source or context not set");
+    void run_processing_loop() {
+        if (!data_source_ || !ctx_ || !manager_) {
+            log_error("StreamController: data source, context or manager not set");
             return;
         }
         
-        log_info("StreamController started, pushing to buffer: {}", buffer_key_);
+        log_info("StreamController started, buffer: {}", buffer_key_);
         
         while (running_) {
             std::vector<T> chunk;
             bool has_data = data_source_(chunk);
             
-            if (!has_data || chunk.empty()) {
+            if (!has_data) {
                 log_info("StreamController: data source exhausted");
                 eof_reached_ = true;
                 break;
             }
             
-            while (running_) {
-                if (ctx_->ring_buffer_push(buffer_key_, std::move(chunk))) {
-                    chunks_pushed_++;
-                    ctx_->notify_data_ready();
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
+            chunks_pushed_++;
+            
+            manager_->run(*ctx_);
         }
         
         if (ctx_) {

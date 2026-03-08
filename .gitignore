@@ -8,6 +8,11 @@ build*
 3rd-archive/
 3rd-lib/
 
+examples/model/
+example/model/
+data/
+test_data/
+
 # macOS
 .DS_Store
 

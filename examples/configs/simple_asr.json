@@ -1,0 +1,60 @@
+{
+  "name": "Paraformer ASR",
+  "version": "1.0",
+  "mode": "offline",
+  "input": {
+    "type": "file",
+    "source": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav",
+    "sample_rate": 16000
+  },
+  "output": {
+    "type": "text",
+    "include_segments": true,
+    "include_timestamp": true
+  },
+  "pipelines": [
+    {
+      "id": "asr_stage",
+      "name": "ASR Recognition Stage",
+      "max_concurrency": 1,
+      "input": {
+        "key": "audio_buffer",
+        "chunk_size": -1
+      },
+      "output": {
+        "key": "asr_results"
+      },
+      "ops": [
+        {
+          "id": "fbank",
+          "name": "KaldiFbank",
+          "params": {
+            "num_bins": 80,
+            "sample_rate": 16000,
+            "frame_length_ms": 25,
+            "frame_shift_ms": 10,
+            "dither": 0,
+            "snip_edges": false,
+            "window_type": "hamming",
+            "input_buffer_key": "audio_planar",
+            "output_key": "fbank",
+            "lfr_window_size": 7,
+            "lfr_window_shift": 6,
+            "cmvn_file": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/am.mvn"
+          }
+        },
+        {
+          "id": "paraformer_asr",
+          "name": "AsrParaformer",
+          "params": {
+            "model_path": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx",
+            "tokens_path": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt",
+            "feature_input_key": "fbank",
+            "language": "zh"
+          },
+          "depends_on": ["fbank"]
+        }
+      ]
+    }
+  ]
+}

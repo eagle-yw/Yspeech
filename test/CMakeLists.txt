@@ -11,6 +11,11 @@ add_executable(test
     test_real_audio.cpp
     test_silero_vad.cpp
     test_silero_vad_simple.cpp
+    test_asr.cpp
+    test_integration_vad_asr.cpp
+    test_asr_real_audio.cpp
+    test_kaldi_fbank_op.cpp
+    test_kaldi_fbank_op_extended.cpp
 )
 
 target_include_directories(test PRIVATE ${CMAKE_SOURCE_DIR}/src)

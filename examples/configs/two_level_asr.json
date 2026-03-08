@@ -1,0 +1,92 @@
+{
+  "name": "Two-Level ASR Pipeline",
+  "version": "1.0",
+  "mode": "streaming",
+  "global": {
+    "properties": {
+      "model_root": "./models",
+      "sample_rate": 16000,
+      "log_level": "INFO"
+    }
+  },
+  "input": {
+    "type": "file",
+    "source": "audio.wav",
+    "sample_rate": 16000,
+    "chunk_size": 1600
+  },
+  "output": {
+    "type": "json",
+    "file": "asr_output.json",
+    "include_segments": true,
+    "include_timestamp": true,
+    "include_confidence": true
+  },
+  "pipelines": [
+    {
+      "id": "preprocess",
+      "name": "Preprocessing Pipeline",
+      "max_concurrency": 8,
+      "input": {
+        "key": "audio_buffer",
+        "chunk_size": 1600
+      },
+      "output": {
+        "key": "features_buffer"
+      },
+      "ops": [
+        {
+          "id": "vad_op",
+          "name": "VadStream",
+          "params": {
+            "threshold": 0.5,
+            "min_speech_duration_ms": 250
+          },
+          "parallel": true
+        },
+        {
+          "id": "feature_op",
+          "name": "FeatureExtract",
+          "params": {
+            "feature_type": "fbank",
+            "num_mel_bins": 80
+          },
+          "parallel": true,
+          "depends_on": ["vad_op"]
+        }
+      ]
+    },
+    {
+      "id": "inference",
+      "name": "Inference Pipeline",
+      "max_concurrency": 4,
+      "input": {
+        "key": "features_buffer"
+      },
+      "output": {
+        "key": "asr_results"
+      },
+      "ops": [
+        {
+          "id": "asr_op",
+          "name": "AsrParaformer",
+          "params": {
+            "model_path": "${model_root}/paraformer.onnx",
+            "beam_size": 10
+          },
+          "parallel": false
+        },
+        {
+          "id": "post_op",
+          "name": "PostProcess",
+          "params": {
+            "format": "text",
+            "punctuation": true
+          },
+          "parallel": false,
+          "depends_on": ["asr_op"]
+        }
+      ]
+    }
+  ]
+}
