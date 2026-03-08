@@ -14,8 +14,9 @@ target_sources(yspeech
     yspeech/aspects/logger.cppm
     yspeech/aspects/timer.cppm
     yspeech/op.cppm
-    yspeech/op/vad.cppm
-    yspeech/op/audio_input.cppm
+    yspeech/op/vad/vad.cppm
+    yspeech/op/vad/silero_vad.cppm
+    yspeech/op/audio/audio_input.cppm
     yspeech/pipeline_config.cppm
     yspeech/pipeline.cppm
     yspeech/pipeline_manager.cppm
