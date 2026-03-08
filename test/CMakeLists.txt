@@ -16,6 +16,7 @@ add_executable(test
     test_asr_real_audio.cpp
     test_kaldi_fbank_op.cpp
     test_kaldi_fbank_op_extended.cpp
+    test_kaldi_fbank_performance.cpp
 )
 
 target_include_directories(test PRIVATE ${CMAKE_SOURCE_DIR}/src)
