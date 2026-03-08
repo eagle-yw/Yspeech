@@ -2,6 +2,72 @@
 
 本目录包含 Yspeech 极简 API 的示例程序。
 
+## 快速开始
+
+### 编译项目
+
+```bash
+cd /Users/eagle/workspace/Playground/Yspeech
+cmake -B build -G Ninja
+cmake --build build
+```
+
+### 运行 Demo
+
+#### 1. 离线 ASR 转录
+
+```bash
+./build/examples/simple_transcribe examples/configs/simple_asr.json examples/model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+```
+
+**输出示例:**
+```
+=== 转录结果 ===
+文本：对我做了介绍啊那么我想说的是呢大家如果对我的研究感兴趣呢嗯
+置信度：0.90
+语言：zh
+处理时间：474ms
+```
+
+#### 2. 流式 ASR 识别
+
+```bash
+./build/examples/streaming_demo examples/configs/streaming_asr.json examples/model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+```
+
+**输出示例:**
+```
+=== Yspeech 流式 ASR 实际音频测试 ===
+
+配置文件: examples/configs/streaming_asr.json
+音频文件: examples/model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+
+加载音频: 89834 样本, 1 通道, 16000Hz
+开始流式识别...
+分块推送音频: 57 块, 每块 1600 样本 (100ms)
+
+[识别结果 #1] 对我做了介绍啊
+  置信度: 0.9
+  语言: zh
+
+...
+
+=== 统计信息 ===
+处理时间: 1226ms
+音频块数: 57
+结果数: 40
+音频时长: 5614.62ms
+RTF: 0.218358
+```
+
+### 编译单个示例
+
+```bash
+cmake --build build --target simple_transcribe
+cmake --build build --target streaming_demo
+cmake --build build --target transcribe_tool
+```
+
 ## 示例程序列表
 
 ### 1. simple_transcribe.cpp
