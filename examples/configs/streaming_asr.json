@@ -1,0 +1,89 @@
+{
+  "name": "Streaming ASR",
+  "version": "1.0",
+  "mode": "streaming",
+  "input": {
+    "type": "microphone",
+    "sample_rate": 16000,
+    "chunk_size": 1600
+  },
+  "output": {
+    "type": "callback",
+    "include_segments": true,
+    "include_timestamp": true
+  },
+  "pipelines": [
+    {
+      "id": "vad_stage",
+      "name": "VAD Detection Stage",
+      "max_concurrency": 4,
+      "input": {
+        "key": "audio_buffer",
+        "chunk_size": 1600
+      },
+      "output": {
+        "key": "vad_results"
+      },
+      "ops": [
+        {
+          "id": "silero_vad",
+          "name": "SileroVad",
+          "params": {
+            "model_path": "model/vad/silero_vad.onnx",
+            "threshold": 0.5,
+            "sample_rate": 16000,
+            "min_speech_duration_ms": 250,
+            "min_silence_duration_ms": 100
+          },
+          "parallel": true
+        }
+      ]
+    },
+    {
+      "id": "asr_stage",
+      "name": "ASR Recognition Stage",
+      "max_concurrency": 4,
+      "input": {
+        "key": "vad_results"
+      },
+      "output": {
+        "key": "asr_results"
+      },
+      "ops": [
+        {
+          "id": "fbank",
+          "name": "KaldiFbank",
+          "params": {
+            "num_bins": 80,
+            "sample_rate": 16000,
+            "frame_length_ms": 25,
+            "frame_shift_ms": 10,
+            "dither": 0,
+            "snip_edges": false,
+            "input_buffer_key": "audio_planar",
+            "output_key": "fbank",
+            "lfr_window_size": 7,
+            "lfr_window_shift": 6,
+            "cmvn_file": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/am.mvn",
+            "enable_accumulation": true,
+            "min_accumulated_frames": 15,
+            "max_accumulated_frames": 100
+          }
+        },
+        {
+          "id": "paraformer_asr",
+          "name": "AsrParaformer",
+          "params": {
+            "model_path": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx",
+            "tokens_path": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt",
+            "feature_input_key": "fbank",
+            "sample_rate": 16000,
+            "language": "zh"
+          },
+          "parallel": false,
+          "depends_on": ["fbank"]
+        }
+      ]
+    }
+  ]
+}
