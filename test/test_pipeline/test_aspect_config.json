@@ -1,0 +1,11 @@
+{
+    "ops": [
+        {
+            "id": "op1",
+            "name": "Vad",
+            "params": {
+                "model_path": "dummy"
+            }
+        }
+    ]
+}

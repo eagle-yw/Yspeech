@@ -1,19 +1,17 @@
-
-export module yspeech.Audio;
+export module yspeech.audio;
 
 import std;
-import yspeech.Common.Types;
+import yspeech.types;
 
 namespace yspeech {
 
 export enum class SampleRate {
-    SR_8000  = 8000,    // 8 kHz
-    SR_16000 = 16000,  // 16 kHz
-    SR_32000 = 32000,  // 32 kHz
-    SR_48000 = 48000,  // 48 kHz
+    SR_8000  = 8000,
+    SR_16000 = 16000,
+    SR_32000 = 32000,
+    SR_48000 = 48000,
 };
 
-// 获取采样率的名称
 export std::string_view getSampleRateName(SampleRate rate) {
     static const std::unordered_map<SampleRate, std::string> rateNames = {
         {SampleRate::SR_8000, "8 kHz"},
@@ -106,4 +104,4 @@ private:
     std::unique_ptr<Concept> self_;
 };
 
-} // end namespace yspeech
+}

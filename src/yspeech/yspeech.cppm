@@ -1,0 +1,21 @@
+export module yspeech;
+
+export import yspeech.types;
+export import yspeech.ring_buffer;
+export import yspeech.error;
+export import yspeech.state;
+export import yspeech.context;
+export import yspeech.log;
+export import yspeech.capability;
+export import yspeech.aspect;
+export import yspeech.aspect.logger;
+export import yspeech.aspect.timer;
+export import yspeech.op;
+export import yspeech.op.vad;
+export import yspeech.pipeline_config;
+export import yspeech.pipeline;
+export import yspeech.pipeline_manager;
+export import yspeech.stream_controller;
+export import yspeech.engine;
+export import yspeech.audio;
+export import yspeech.audio.file;

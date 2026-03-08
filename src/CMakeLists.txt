@@ -1,34 +1,43 @@
 
-include(../cmake/import/SetupONNXRuntime.cmake)
-setup_onnxruntime(VERSION 1.20.1 PLATFORM linux-x64-gpu UPDATE OFF)
-
-
-include(FetchContent)
-FetchContent_Declare(
-    json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.3
-)
-FetchContent_MakeAvailable(json)
-
 add_library(yspeech)
 
 target_sources(yspeech 
-    PUBLIC FILE_SET CXX_MODULES FILES
-    yspeech.cppm
-    engine.cppm
-    context.cppm
-    pipeline.cppm
-    cicular_buffer.cppm
-    common/types.ixx
-    operator/operator.cppm
-    operator/op_vad.cppm
-    audio/audio.cppm
-    audio/audio_file.cppm
+    PUBLIC FILE_SET CXX_MODULES BASE_DIRS . FILES
+    yspeech/types.cppm
+    yspeech/ring_buffer.cppm
+    yspeech/error.cppm
+    yspeech/state.cppm
+    yspeech/context.cppm
+    yspeech/log.cppm
+    yspeech/capability.cppm
+    yspeech/aspect.cppm
+    yspeech/aspects/logger.cppm
+    yspeech/aspects/timer.cppm
+    yspeech/op.cppm
+    yspeech/op/vad.cppm
+    yspeech/op/audio_input.cppm
+    yspeech/pipeline_config.cppm
+    yspeech/pipeline.cppm
+    yspeech/pipeline_manager.cppm
+    yspeech/stream_controller.cppm
+    yspeech/engine.cppm
+    yspeech/audio.cppm
+    yspeech/audio/audio_file.cppm
+    yspeech/yspeech.cppm
 )
 
-target_link_libraries(yspeech PRIVATE
-    ${ONNXRUNTIME_LIBRARY}
-    nlohmann_json::nlohmann_json
+target_link_libraries(yspeech 
+    PRIVATE
+        onnxruntime
+        taskflow
+        glog::glog
+    PUBLIC
+        nlohmann_json::nlohmann_json
 )
 
+target_include_directories(yspeech PRIVATE 
+    ${onnxruntime_SOURCE_DIR}/include/onnxruntime/core/session
+)
+
+set_property(TARGET yspeech PROPERTY CXX_MODULE_STD ON)
+set_target_properties(yspeech PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON)

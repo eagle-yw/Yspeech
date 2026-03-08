@@ -1,41 +1,35 @@
 #include "gtest/gtest.h"
+#include <nlohmann/json.hpp>
 
 import std;
 import yspeech;
-
-
+import yspeech.op;
 
 TEST(TestEngine, TestOperatorIface){
     std::vector<yspeech::OperatorIface> operators;
     struct OpTest {
-        OpTest() {
-            std::cout << "OpTest" << std::endl;
-        }
-        ~OpTest() {
-            std::cout << "~OpTest" << std::endl;
-        }
+        OpTest() = default;
+        ~OpTest() = default;
 
         OpTest(const OpTest&) = delete;
         OpTest& operator=(const OpTest&) = delete;
         OpTest(OpTest&&) noexcept = default;
         OpTest& operator=(OpTest&&) noexcept = default;
         
-        void load(std::string_view path){
-
+        void init(const nlohmann::json& config){
         }
 
-        void process(yspeech::Context bytes){
-
+        void process(yspeech::Context& bytes){
         }
     };
 
-    operators.emplace_back(yspeech::OpVad());
     operators.emplace_back(OpTest());
 }
 
 TEST(TestEngine, TestEngine){
     auto engine = yspeech::Engine();
-    engine.run();
+    yspeech::Context ctx;
+    engine.run(ctx);
 }
 
 

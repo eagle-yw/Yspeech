@@ -1,7 +1,9 @@
 #include "gtest/gtest.h"
 
-import std;
+import yspeech.audio.file;
+import yspeech.audio;
 import yspeech;
+import std;
 
 TEST(TestAudio, TestAudioFile) {
     auto s = yspeech::AudioFileStream("./temp/audio/test_wavs/0.wav");

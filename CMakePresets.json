@@ -2,7 +2,7 @@
     "version": 8,
     "configurePresets": [
         {
-            "name": "clang",
+            "name": "clang-linux",
             "displayName": "Clang x86_64-pc-linux-gnu",
             "description": "使用编译器: C = /usr/sbin/clang, CXX = /usr/sbin/clang++",
             "generator": "Ninja",
@@ -13,7 +13,21 @@
                 "CMAKE_CXX_COMPILER": "/usr/sbin/clang++",
                 "CMAKE_INSTALL_PREFIX": "${sourceDir}/install",
                 "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain/clang-toolchain.cmake",
-                "CMAKE_EXPORT_COMPILE_COMMANDS":true
+                "CMAKE_EXPORT_COMPILE_COMMANDS": true
+            }
+        },
+        {
+            "name": "clang-mac",
+            "displayName": "Clang 21.1.8 arm64-apple-darwin25.3.0",
+            "description": "正在使用编译器: C = /opt/homebrew/opt/llvm/bin/clang, CXX = /opt/homebrew/opt/llvm/bin/clang++",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/",
+            "cacheVariables": {
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/install",
+                "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
+                "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++",
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": true
             }
         }
     ]

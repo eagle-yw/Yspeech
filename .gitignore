@@ -1,4 +1,14 @@
-.idea
-.cache
-build
-temp
+.idea/
+.cache/
+.vscode/
+.trae/
+
+build*
+.3rd-cache/
+3rd-archive/
+3rd-lib/
+
+# macOS
+.DS_Store
+
+CLAUDE.md
