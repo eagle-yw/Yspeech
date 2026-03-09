@@ -47,6 +47,28 @@ public:
         return true;
     }
     
+    size_t push_batch(const T* items, size_t count) {
+        std::unique_lock lock(mutex_);
+        size_t available = capacity_ - size_;
+        size_t to_write = std::min(count, available);
+        
+        for (size_t i = 0; i < to_write; ++i) {
+            buffer_[write_idx_] = items[i];
+            write_idx_ = (write_idx_ + 1) % capacity_;
+            ++size_;
+        }
+        
+        if (to_write > 0) {
+            cv_.notify_one();
+        }
+        
+        return to_write;
+    }
+    
+    size_t push_batch(std::span<const T> items) {
+        return push_batch(items.data(), items.size());
+    }
+    
     bool pop(T& item) {
         std::unique_lock lock(mutex_);
         if (empty()) {
@@ -72,6 +94,42 @@ public:
         return true;
     }
     
+    size_t pop_batch(T* items, size_t count) {
+        std::unique_lock lock(mutex_);
+        size_t to_read = std::min(count, size_);
+        
+        for (size_t i = 0; i < to_read; ++i) {
+            items[i] = std::move(buffer_[read_idx_]);
+            read_idx_ = (read_idx_ + 1) % capacity_;
+            --size_;
+        }
+        
+        return to_read;
+    }
+    
+    size_t pop_batch(std::span<T> items) {
+        return pop_batch(items.data(), items.size());
+    }
+    
+    size_t pop_batch_wait(T* items, size_t count, std::chrono::milliseconds timeout = std::chrono::milliseconds(1000)) {
+        std::unique_lock lock(mutex_);
+        if (!cv_.wait_for(lock, timeout, [this]() { return !empty() || stopped_; })) {
+            return 0;
+        }
+        if (stopped_ || empty()) {
+            return 0;
+        }
+        size_t to_read = std::min(count, size_);
+        
+        for (size_t i = 0; i < to_read; ++i) {
+            items[i] = std::move(buffer_[read_idx_]);
+            read_idx_ = (read_idx_ + 1) % capacity_;
+            --size_;
+        }
+        
+        return to_read;
+    }
+    
     void stop() {
         std::unique_lock lock(mutex_);
         stopped_ = true;
@@ -90,6 +148,7 @@ public:
     bool full() const { return size_ == capacity_; }
     size_t size() const { return size_; }
     size_t capacity() const { return capacity_; }
+    size_t available() const { return capacity_ - size_; }
 
 private:
     std::vector<T> buffer_;

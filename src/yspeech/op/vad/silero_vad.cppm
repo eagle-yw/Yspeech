@@ -121,8 +121,8 @@ private:
         env_ = std::make_unique<Ort::Env>(std::move(env));
 
         Ort::SessionOptions session_options;
-        session_options.SetIntraOpNumThreads(1);
-        session_options.SetInterOpNumThreads(1);
+        session_options.SetIntraOpNumThreads(2);
+        // session_options.SetInterOpNumThreads(1);
         session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
         session_ = std::make_unique<Ort::Session>(*env_, model_path_.c_str(), session_options);
@@ -133,6 +133,7 @@ private:
         input_name_ = "x";
         h_name_ = "h";
         c_name_ = "c";
+        sr_name_ = "sr";
 
         output_name_ = "prob";
         h_out_name_ = "new_h";
@@ -140,6 +141,37 @@ private:
 
         log_info("ONNX Model I/O: input={}, h={}, c={}, sr={}, output={}, h_out={}, c_out={}",
                  input_name_, h_name_, c_name_, sr_name_, output_name_, h_out_name_, c_out_name_);
+
+        log_info("ONNX session created for {}", model_path_);
+
+        Ort::AllocatorWithDefaultOptions allocator;
+        size_t num_inputs = session_->GetInputCount();
+        log_info("Model has {} inputs:", num_inputs);
+        for (size_t i = 0; i < num_inputs; ++i) {
+            auto name = session_->GetInputNameAllocated(i, allocator);
+            auto type_info = session_->GetInputTypeInfo(i);
+            auto tensor_info = type_info.GetTensorTypeAndShapeInfo();
+            auto shape = tensor_info.GetShape();
+            std::string shape_str;
+            for (auto dim : shape) {
+                shape_str += std::to_string(dim) + " ";
+            }
+            log_info("  Input {}: shape [{}]", name.get(), shape_str);
+        }
+
+        size_t num_outputs = session_->GetOutputCount();
+        log_info("Model has {} outputs:", num_outputs);
+        for (size_t i = 0; i < num_outputs; ++i) {
+            auto name = session_->GetOutputNameAllocated(i, allocator);
+            auto type_info = session_->GetOutputTypeInfo(i);
+            auto tensor_info = type_info.GetTensorTypeAndShapeInfo();
+            auto shape = tensor_info.GetShape();
+            std::string shape_str;
+            for (auto dim : shape) {
+                shape_str += std::to_string(dim) + " ";
+            }
+            log_info("  Output {}: shape [{}]", name.get(), shape_str);
+        }
     }
 
     void reset_state() {

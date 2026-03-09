@@ -9,8 +9,6 @@ module;
 #include <functional>
 #include <filesystem>
 #include <chrono>
-#include <fstream>
-#include <cstring>
 #include <memory>
 
 export module yspeech.streaming_asr;
@@ -23,6 +21,7 @@ import yspeech.types;
 import yspeech.log;
 import yspeech.error;
 import yspeech.pipeline_config;
+import yspeech.ring_buffer;
 import yspeech.op.silero_vad;
 import yspeech.op.feature.kaldi_fbank;
 import yspeech.op.asr.paraformer;
@@ -124,37 +123,31 @@ public:
     void init_streaming_mode() {
         context_->init_audio_buffer("audio_planar", 1, 16000 * 60);
         
+        input_ring_buffer_ = std::make_shared<RingBuffer<float>>(16000 * 30);
+        
         stream_controller_ = std::make_unique<AudioStreamController>();
         
         stream_controller_->set_data_source([this](auto& chunks) -> bool {
             using ChunkType = std::remove_reference_t<decltype(chunks)>;
             using ElementType = typename ChunkType::value_type;
             
-            while (true) {
-                std::unique_lock<std::mutex> lock(input_mutex_);
-                
-                if (input_queue_.empty()) {
-                    if (!running_) {
-                        return false;
-                    }
-                    input_cv_.wait_for(lock, std::chrono::milliseconds(100), [this] {
-                        return !input_queue_.empty() || !running_;
-                    });
-                    if (input_queue_.empty() && !running_) {
-                        return false;
-                    }
-                } else {
-                    ElementType chunk = std::move(input_queue_.front());
-                    input_queue_.pop();
-                    
-                    const float* float_data = reinterpret_cast<const float*>(chunk.data());
-                    size_t num_samples = chunk.size() / sizeof(float);
-                    
-                    context_->audio_buffer_write_interleaved("audio_planar", float_data, num_samples, 16000);
-                    
-                    return true;
+            constexpr size_t batch_size = 1600;
+            std::vector<float> audio_batch(batch_size);
+            
+            size_t samples_read = input_ring_buffer_->pop_batch_wait(
+                audio_batch.data(), batch_size, std::chrono::milliseconds(100));
+            
+            if (samples_read == 0) {
+                if (!running_) {
+                    return false;
                 }
+                return false;
             }
+            
+            context_->audio_buffer_write_interleaved("audio_planar", 
+                audio_batch.data(), samples_read, 16000);
+            
+            return true;
         });
         
         stream_controller_->set_buffer_key("audio_planar");
@@ -174,24 +167,35 @@ public:
         
         result_thread_ = std::thread([this]() {
             while (running_) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                std::unique_lock<std::mutex> lock(result_mutex_);
+                result_cv_.wait_for(lock, std::chrono::milliseconds(50), [this]() {
+                    return !running_ || has_pending_result_;
+                });
+                
+                if (!running_) break;
+                
+                has_pending_result_ = false;
+                lock.unlock();
                 
                 if (!context_) continue;
                 
                 if (context_->contains("asr_results")) {
                     try {
                         auto results = context_->get<std::vector<AsrResult>>("asr_results");
+                        lock.lock();
                         for (auto& result : results) {
                             if (!result.text.empty()) {
-                                std::lock_guard<std::mutex> lock(result_mutex_);
                                 result_queue_.push(result);
                                 stats_.asr_results_generated++;
                                 
                                 if (result_callback_) {
+                                    lock.unlock();
                                     result_callback_(result);
+                                    lock.lock();
                                 }
                             }
                         }
+                        lock.unlock();
                         context_->set("asr_results", std::vector<AsrResult>{});
                     } catch (...) {
                     }
@@ -222,7 +226,9 @@ public:
         
         running_ = false;
         
-        input_cv_.notify_all();
+        if (input_ring_buffer_) {
+            input_ring_buffer_->stop();
+        }
         
         if (stream_controller_) {
             stream_controller_->stop();
@@ -244,32 +250,20 @@ public:
     }
 
     void push_audio(const std::vector<float>& audio) {
-        if (!running_ || !stream_controller_) {
+        if (!running_ || !input_ring_buffer_) {
             return;
         }
         
-        std::vector<Byte> byte_data(audio.size() * sizeof(float));
-        std::memcpy(byte_data.data(), audio.data(), byte_data.size());
-        
-        std::lock_guard<std::mutex> lock(input_mutex_);
-        input_queue_.push(std::move(byte_data));
-        input_cv_.notify_one();
-        
+        input_ring_buffer_->push_batch(audio.data(), audio.size());
         stats_.audio_chunks_processed++;
     }
     
     void push_audio(const float* data, size_t size) {
-        if (!running_ || !stream_controller_) {
+        if (!running_ || !input_ring_buffer_) {
             return;
         }
         
-        std::vector<Byte> byte_data(size * sizeof(float));
-        std::memcpy(byte_data.data(), data, byte_data.size());
-        
-        std::lock_guard<std::mutex> lock(input_mutex_);
-        input_queue_.push(std::move(byte_data));
-        input_cv_.notify_one();
-        
+        input_ring_buffer_->push_batch(data, size);
         stats_.audio_chunks_processed++;
     }
 
@@ -352,18 +346,17 @@ private:
     std::unique_ptr<PipelineManager> pipeline_manager_;
     std::unique_ptr<Context> context_;
     std::unique_ptr<AudioStreamController> stream_controller_;
+    std::shared_ptr<RingBuffer<float>> input_ring_buffer_;
     
     std::atomic<bool> running_{false};
     ProcessingStats stats_;
     std::thread result_thread_;
     bool last_vad_state_ = false;
     
-    std::queue<std::vector<Byte>> input_queue_;
-    mutable std::mutex input_mutex_;
-    std::condition_variable input_cv_;
-    
     std::queue<AsrResult> result_queue_;
     mutable std::mutex result_mutex_;
+    std::condition_variable result_cv_;
+    std::atomic<bool> has_pending_result_{false};
     
     ResultCallback result_callback_;
     VadCallback vad_callback_;

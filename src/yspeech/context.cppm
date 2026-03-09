@@ -410,10 +410,14 @@ public:
         int num_channels = static_cast<int>(buffer->channels.size());
         buffer->sample_rate = sample_rate;
         
-        for (size_t frame = 0; frame < num_frames; ++frame) {
-            for (int ch = 0; ch < num_channels; ++ch) {
-                float sample = data[frame * num_channels + ch];
-                buffer->channels[ch]->push(sample);
+        if (num_channels == 1) {
+            buffer->channels[0]->push_batch(data, num_frames);
+        } else {
+            for (size_t frame = 0; frame < num_frames; ++frame) {
+                for (int ch = 0; ch < num_channels; ++ch) {
+                    float sample = data[frame * num_channels + ch];
+                    buffer->channels[ch]->push(sample);
+                }
             }
         }
         
