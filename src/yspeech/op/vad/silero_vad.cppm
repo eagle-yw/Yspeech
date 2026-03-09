@@ -54,7 +54,7 @@ public:
         init_onnx_session();
         reset_state();
 
-        log_info("OpSileroVad initialized: model={}, threshold={}, sample_rate={}",
+        log_debug("OpSileroVad initialized: model={}, threshold={}, sample_rate={}",
                  model_path_, threshold_, sample_rate_);
     }
 
@@ -98,7 +98,7 @@ public:
             segments.push_back(segment);
             ctx.set(output_key_ + "_segments", segments);
 
-            log_info("VAD segment detected: [{:.0f}ms - {:.0f}ms], confidence={:.2f}",
+            log_debug("VAD segment detected: [{:.0f}ms - {:.0f}ms], confidence={:.2f}",
                      segment.start_ms, segment.end_ms, segment.confidence);
 
             reset_segment_state();
@@ -109,7 +109,6 @@ public:
 
     void deinit() {
         session_.reset();
-        log_info("OpSileroVad deinitialized");
     }
 
     bool is_speech() const { return is_speech_; }
@@ -139,14 +138,14 @@ private:
         h_out_name_ = "new_h";
         c_out_name_ = "new_c";
 
-        log_info("ONNX Model I/O: input={}, h={}, c={}, sr={}, output={}, h_out={}, c_out={}",
+        log_debug("ONNX Model I/O: input={}, h={}, c={}, sr={}, output={}, h_out={}, c_out={}",
                  input_name_, h_name_, c_name_, sr_name_, output_name_, h_out_name_, c_out_name_);
 
-        log_info("ONNX session created for {}", model_path_);
+        log_debug("ONNX session created for {}", model_path_);
 
         Ort::AllocatorWithDefaultOptions allocator;
         size_t num_inputs = session_->GetInputCount();
-        log_info("Model has {} inputs:", num_inputs);
+        log_debug("Model has {} inputs:", num_inputs);
         for (size_t i = 0; i < num_inputs; ++i) {
             auto name = session_->GetInputNameAllocated(i, allocator);
             auto type_info = session_->GetInputTypeInfo(i);
@@ -156,11 +155,11 @@ private:
             for (auto dim : shape) {
                 shape_str += std::to_string(dim) + " ";
             }
-            log_info("  Input {}: shape [{}]", name.get(), shape_str);
+            log_debug("  Input {}: shape [{}]", name.get(), shape_str);
         }
 
         size_t num_outputs = session_->GetOutputCount();
-        log_info("Model has {} outputs:", num_outputs);
+        log_debug("Model has {} outputs:", num_outputs);
         for (size_t i = 0; i < num_outputs; ++i) {
             auto name = session_->GetOutputNameAllocated(i, allocator);
             auto type_info = session_->GetOutputTypeInfo(i);
@@ -170,7 +169,7 @@ private:
             for (auto dim : shape) {
                 shape_str += std::to_string(dim) + " ";
             }
-            log_info("  Output {}: shape [{}]", name.get(), shape_str);
+            log_debug("  Output {}: shape [{}]", name.get(), shape_str);
         }
     }
 

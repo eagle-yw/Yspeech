@@ -71,7 +71,7 @@ public:
         results.push_back(result);
         ctx.set(output_key_ + "_results", results);
 
-        log_info("ASR result: \"{}\" (confidence={:.2f})", result.text, result.confidence);
+        log_debug("ASR result: \"{}\" (confidence={:.2f})", result.text, result.confidence);
     }
 
     void deinit() override {
@@ -93,11 +93,11 @@ private:
         session_ = std::make_unique<Ort::Session>(*env_, model_path_.c_str(), session_options);
         memory_info_ = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
         
-        log_info("ONNX session created for {}", model_path_);
+        log_debug("ONNX session created for {}", model_path_);
         
         Ort::AllocatorWithDefaultOptions allocator;
         size_t num_inputs = session_->GetInputCount();
-        log_info("Model has {} inputs:", num_inputs);
+        log_debug("Model has {} inputs:", num_inputs);
         for (size_t i = 0; i < num_inputs; ++i) {
             auto name = session_->GetInputNameAllocated(i, allocator);
             auto type_info = session_->GetInputTypeInfo(i);
@@ -107,11 +107,11 @@ private:
             for (auto dim : shape) {
                 shape_str += std::to_string(dim) + " ";
             }
-            log_info("  Input {}: {} [{}]", i, name.get(), shape_str);
+            log_debug("  Input {}: {} [{}]", i, name.get(), shape_str);
         }
         
         size_t num_outputs = session_->GetOutputCount();
-        log_info("Model has {} outputs:", num_outputs);
+        log_debug("Model has {} outputs:", num_outputs);
         for (size_t i = 0; i < num_outputs; ++i) {
             auto name = session_->GetOutputNameAllocated(i, allocator);
             auto type_info = session_->GetOutputTypeInfo(i);
@@ -121,7 +121,7 @@ private:
             for (auto dim : shape) {
                 shape_str += std::to_string(dim) + " ";
             }
-            log_info("  Output {}: {} [{}]", i, name.get(), shape_str);
+            log_debug("  Output {}: {} [{}]", i, name.get(), shape_str);
         }
     }
 
@@ -151,7 +151,7 @@ private:
             }
         }
 
-        log_info("Loaded {} tokens from {}", id_to_token_.size(), tokens_path_);
+        log_debug("Loaded {} tokens from {}", id_to_token_.size(), tokens_path_);
     }
 
     AsrResult infer(const std::vector<std::vector<float>>& features) {
@@ -166,7 +166,7 @@ private:
         int num_frames = static_cast<int>(features.size());
         int feat_dim = static_cast<int>(features[0].size());
 
-        log_info("Inference: {} frames, {} dims", num_frames, feat_dim);
+        log_debug("Inference: {} frames, {} dims", num_frames, feat_dim);
 
         std::vector<float> input_data;
         input_data.reserve(num_frames * feat_dim);
@@ -178,7 +178,7 @@ private:
         std::vector<int64_t> length_shape = {1};
         std::vector<int32_t> length_data = {num_frames};
 
-        log_info("Creating input tensors...");
+        log_debug("Creating input tensors...");
 
         Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
             memory_info_, input_data.data(), input_data.size(), 
@@ -193,7 +193,7 @@ private:
         std::vector<const char*> input_names = {"speech", "speech_lengths"};
         std::vector<const char*> output_names = {"logits", "token_num"};
 
-        log_info("Running ONNX inference...");
+        log_debug("Running ONNX inference...");
 
         try {
             auto outputs = session_->Run(
@@ -205,7 +205,7 @@ private:
                 output_names.size()
             );
 
-            log_info("Inference complete, processing outputs...");
+            log_debug("Inference complete, processing outputs...");
 
             float* logits_data = outputs[0].GetTensorMutableData<float>();
             auto logits_shape = outputs[0].GetTensorTypeAndShapeInfo().GetShape();

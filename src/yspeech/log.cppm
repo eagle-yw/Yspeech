@@ -1,53 +1,65 @@
 module;
 
-#include <glog/logging.h>
-#include <source_location>
-#include <chrono>
-#include <ctime>
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/fmt/fmt.h>
 
 export module yspeech.log;
 
 import std;
 
-// 全局函数，确保glog可以正确调用
-void custom_prefix_formatter(std::ostream& os, const google::LogMessage& msg, void* data) {
-    // 空实现，不输出任何前缀
-}
-
 namespace yspeech {
 
+export enum class LogLevel {
+    Debug = 0,
+    Info = 1,
+    Warn = 2,
+    Error = 3,
+    None = 4
+};
+
+export inline LogLevel current_log_level = LogLevel::Info;
+
+export inline void set_log_level(LogLevel level) {
+    current_log_level = level;
+    auto logger = spdlog::default_logger();
+    if (!logger) return;
+    
+    switch (level) {
+        case LogLevel::Debug:
+            logger->set_level(spdlog::level::debug);
+            break;
+        case LogLevel::Info:
+            logger->set_level(spdlog::level::info);
+            break;
+        case LogLevel::Warn:
+            logger->set_level(spdlog::level::warn);
+            break;
+        case LogLevel::Error:
+            logger->set_level(spdlog::level::err);
+            break;
+        case LogLevel::None:
+            logger->set_level(spdlog::level::off);
+            break;
+    }
+}
+
+export inline LogLevel get_log_level() {
+    return current_log_level;
+}
+
 export inline void log_init(const char* program_name) {
-    google::InitGoogleLogging(program_name);
-    // 安装自定义前缀格式化器，不输出任何前缀
-    google::InstallPrefixFormatter(&custom_prefix_formatter);
+    static std::once_flag init_flag;
+    std::call_once(init_flag, []{
+        auto console = spdlog::stdout_color_mt("yspeech");
+        spdlog::set_default_logger(console);
+        console->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [%s:%#] %v");
+        set_log_level(LogLevel::Info);
+    });
 }
 
 export inline void log_shutdown() {
-    google::ShutdownGoogleLogging();
-}
-
-namespace detail {
-
-inline std::string format_location(const std::source_location& loc) {
-    std::string file = loc.file_name();
-    if (auto pos = file.find_last_of("/\\"); pos != std::string::npos) {
-        file = file.substr(pos + 1);
-    }
-    return std::format("{}:{}", file, loc.line());
-}
-
-inline std::string format_time() {
-    auto now = std::chrono::system_clock::now();
-    auto time = std::chrono::system_clock::to_time_t(now);
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch()) % 1000;
-    
-    std::tm tm = *std::localtime(&time);
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
-    return std::format("{}.{}", buf, ms.count());
-}
-
+    spdlog::shutdown();
 }
 
 export struct FmtLoc {
@@ -59,32 +71,46 @@ export struct FmtLoc {
         : fmt(fmt), loc(loc) {}
 };
 
+namespace detail {
+
+inline std::string format_loc(const std::source_location& loc) {
+    std::string file = loc.file_name();
+    if (auto pos = file.find_last_of("/\\"); pos != std::string::npos) {
+        file = file.substr(pos + 1);
+    }
+    return std::format("[{}:{}]", file, loc.line());
+}
+
+template<typename... Args>
+std::string format_msg(FmtLoc fmt_loc, Args&&... args) {
+    try {
+        return std::format("{} {}", format_loc(fmt_loc.loc), 
+            std::vformat(fmt_loc.fmt, std::make_format_args(args...)));
+    } catch (...) {
+        return std::format("{} {}", format_loc(fmt_loc.loc), fmt_loc.fmt);
+    }
+}
+
+}
+
 export void log_debug(FmtLoc fmt_loc, auto&&... args) {
-    std::cout << std::format("[{}] [DEBUG] [{}] {}\n", 
-                              detail::format_time(),
-                              detail::format_location(fmt_loc.loc), 
-                              std::vformat(fmt_loc.fmt, std::make_format_args(args...)));
+    if (current_log_level > LogLevel::Debug) return;
+    spdlog::debug("{}", detail::format_msg(fmt_loc, std::forward<decltype(args)>(args)...));
 }
 
 export void log_info(FmtLoc fmt_loc, auto&&... args) {
-    std::cout << std::format("[{}] [INFO] [{}] {}\n", 
-                            detail::format_time(),
-                            detail::format_location(fmt_loc.loc), 
-                            std::vformat(fmt_loc.fmt, std::make_format_args(args...)));
+    if (current_log_level > LogLevel::Info) return;
+    spdlog::info("{}", detail::format_msg(fmt_loc, std::forward<decltype(args)>(args)...));
 }
 
 export void log_warn(FmtLoc fmt_loc, auto&&... args) {
-    std::cout << std::format("[{}] [WARN] [{}] {}\n", 
-                                detail::format_time(),
-                                detail::format_location(fmt_loc.loc), 
-                                std::vformat(fmt_loc.fmt, std::make_format_args(args...)));
+    if (current_log_level > LogLevel::Warn) return;
+    spdlog::warn("{}", detail::format_msg(fmt_loc, std::forward<decltype(args)>(args)...));
 }
 
 export void log_error(FmtLoc fmt_loc, auto&&... args) {
-    std::cerr << std::format("[{}] [ERROR] [{}] {}\n", 
-                              detail::format_time(),
-                              detail::format_location(fmt_loc.loc), 
-                              std::vformat(fmt_loc.fmt, std::make_format_args(args...)));
+    if (current_log_level > LogLevel::Error) return;
+    spdlog::error("{}", detail::format_msg(fmt_loc, std::forward<decltype(args)>(args)...));
 }
 
 }

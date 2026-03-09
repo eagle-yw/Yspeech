@@ -1,7 +1,6 @@
 module;
 
 #include <nlohmann/json.hpp>
-#include <cstdint>
 
 export module yspeech.op.audio_input;
 
@@ -67,12 +66,12 @@ public:
         }
         
         const int16_t* pcm = reinterpret_cast<const int16_t*>(raw_chunk.data());
-        size_t num_samples = raw_chunk.size() / sizeof(int16_t);
-        size_t num_frames = num_samples / static_cast<size_t>(num_channels);
+        std::size_t num_samples = raw_chunk.size() / sizeof(int16_t);
+        std::size_t num_frames = num_samples / static_cast<std::size_t>(num_channels);
         
         std::vector<float> float_data;
         float_data.reserve(num_samples);
-        for (size_t i = 0; i < num_samples; ++i) {
+        for (std::size_t i = 0; i < num_samples; ++i) { 
             float_data.push_back(static_cast<float>(pcm[i]) / 32768.0f);
         }
         
@@ -95,7 +94,7 @@ private:
     std::string input_buffer_key_ = "audio_buffer";
     std::string output_buffer_key_ = "audio_planar";
     int num_channels_ = 1;
-    size_t buffer_capacity_ = static_cast<size_t>(16000) * 60;
+    std::size_t buffer_capacity_ = static_cast<std::size_t>(16000) * 60;
     bool output_initialized_ = false;
 };
 

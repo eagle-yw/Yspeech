@@ -2,11 +2,6 @@ module;
 
 #include <taskflow/taskflow.hpp>
 #include <nlohmann/json.hpp>
-#include <fstream>
-#include <atomic>
-#include <thread>
-#include <vector>
-#include <memory>
 
 export module yspeech.pipeline_manager;
 
@@ -15,6 +10,7 @@ import yspeech.error;
 import yspeech.state;
 import yspeech.context;
 import yspeech.aspect;
+import yspeech.aspect.timer;
 import yspeech.op;
 import yspeech.log;
 import yspeech.pipeline;
@@ -31,6 +27,8 @@ public:
         : config_(config), parent_config_(parent_config) {}
     
     void build() {
+        init_aspects();
+        
         std::unordered_map<std::string, tf::Task> tasks;
         
         for (const auto& op_config : config_.ops()) {
@@ -105,7 +103,7 @@ public:
             }
         }
         
-        log_info("PipelineStage '{}' built with {} operators", 
+        log_debug("PipelineStage '{}' built with {} operators", 
                  config_.id().empty() ? "unnamed" : config_.id(), 
                  operators_.size());
     }
@@ -146,6 +144,11 @@ private:
     std::atomic<Context*> ctx_{nullptr};
     std::unordered_map<std::string, ErrorHandlingConfig> error_handling_configs_;
     std::vector<Error> build_errors_;
+    std::vector<AspectIface> aspects_;
+
+    void init_aspects() {
+        aspects_.emplace_back(TimerAspect{});
+    }
 
     void install_global_capabilities(OperatorIface& op) {
         for (const auto& cap_config : parent_config_.capabilities()) {
@@ -182,15 +185,30 @@ private:
             ? eh_config.max_retries + 1 : 1;
         int attempt = 1;
         
+        std::vector<std::any> aspect_payloads(aspects_.size());
+        for (size_t i = 0; i < aspects_.size(); ++i) {
+            aspect_payloads[i] = aspects_[i].before(*ctx, id);
+        }
+        
+        auto call_after_methods = [&]() {
+            for (size_t i = 0; i < aspects_.size(); ++i) {
+                size_t idx = aspects_.size() - 1 - i;
+                aspects_[idx].after(*ctx, id, std::move(aspect_payloads[idx]));
+            }
+        };
+        
         while (attempt <= max_attempts) {
             try {
                 op_ref.process(*ctx);
+                call_after_methods();
                 return;
             } catch (const std::exception& e) {
                 log_error("Error in operator {} (attempt {}/{}): {}", id, attempt, max_attempts, e.what());
                 
                 ctx->record_error(id, e.what(), "Operator", ErrorCode::OperatorProcessFailed, 
                                   ErrorLevel::Error, attempt, false);
+                
+                call_after_methods();
                 
                 if (eh_config.strategy == ErrorStrategy::Skip) {
                     log_warn("Skipping operator {} due to error", id);
@@ -244,7 +262,7 @@ public:
         
         init_buffers();
         
-        log_info("PipelineManager built with {} stage(s)", stages_.size());
+        log_debug("PipelineManager built with {} stage(s)", stages_.size());
     }
     
     void run(Context& ctx) {

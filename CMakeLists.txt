@@ -51,7 +51,7 @@ endif()
 include(${CMAKE_SOURCE_DIR}/cmake/3rd/json.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/3rd/gtest.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/3rd/taskflow.cmake)
-include(${CMAKE_SOURCE_DIR}/cmake/3rd/glog.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/3rd/spdlog.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/3rd/kaldi-native-fbank.cmake)
 
 include(cmake/3rd/onnxruntime.cmake)

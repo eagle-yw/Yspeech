@@ -1,7 +1,6 @@
 module;
 
 #include <nlohmann/json.hpp>
-#include <cmath>
 
 export module yspeech.op.feature.extract;
 

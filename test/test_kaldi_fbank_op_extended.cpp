@@ -69,7 +69,7 @@ protected:
         int num_samples = static_cast<int>(duration_sec * sample_rate);
         
         for (int i = 0; i < num_samples; ++i) {
-            float noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f * amplitude;
+            float noise = (static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f * amplitude;
             audio.push_back(noise);
         }
         

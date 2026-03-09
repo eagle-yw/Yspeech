@@ -1,11 +1,5 @@
 module;
 
-#include <vector>
-#include <mutex>
-#include <condition_variable>
-#include <atomic>
-#include <chrono>
-
 export module yspeech.ring_buffer;
 
 import std;
@@ -15,7 +9,7 @@ namespace yspeech {
 export template<typename T>
 class RingBuffer {
 public:
-    explicit RingBuffer(size_t capacity) 
+    explicit RingBuffer(std::size_t capacity) 
         : buffer_(capacity), capacity_(capacity) {}
     
     RingBuffer(const RingBuffer&) = delete;
@@ -46,13 +40,13 @@ public:
         cv_.notify_one();
         return true;
     }
-    
-    size_t push_batch(const T* items, size_t count) {
-        std::unique_lock lock(mutex_);
-        size_t available = capacity_ - size_;
-        size_t to_write = std::min(count, available);
         
-        for (size_t i = 0; i < to_write; ++i) {
+        std::size_t push_batch(const T* items, std::size_t count) {
+        std::unique_lock lock(mutex_);
+        std::size_t available = capacity_ - size_;
+        std::size_t to_write = std::min(count, available);
+        
+        for (std::size_t i = 0; i < to_write; ++i) {
             buffer_[write_idx_] = items[i];
             write_idx_ = (write_idx_ + 1) % capacity_;
             ++size_;
@@ -65,7 +59,7 @@ public:
         return to_write;
     }
     
-    size_t push_batch(std::span<const T> items) {
+    std::size_t push_batch(std::span<const T> items) {
         return push_batch(items.data(), items.size());
     }
     
@@ -94,11 +88,11 @@ public:
         return true;
     }
     
-    size_t pop_batch(T* items, size_t count) {
+    std::size_t pop_batch(T* items, std::size_t count) {
         std::unique_lock lock(mutex_);
-        size_t to_read = std::min(count, size_);
+        std::size_t to_read = std::min(count, size_);
         
-        for (size_t i = 0; i < to_read; ++i) {
+        for (std::size_t i = 0; i < to_read; ++i) {
             items[i] = std::move(buffer_[read_idx_]);
             read_idx_ = (read_idx_ + 1) % capacity_;
             --size_;
@@ -107,11 +101,11 @@ public:
         return to_read;
     }
     
-    size_t pop_batch(std::span<T> items) {
+    std::size_t pop_batch(std::span<T> items) {
         return pop_batch(items.data(), items.size());
     }
     
-    size_t pop_batch_wait(T* items, size_t count, std::chrono::milliseconds timeout = std::chrono::milliseconds(1000)) {
+    std::size_t pop_batch_wait(T* items, std::size_t count, std::chrono::milliseconds timeout = std::chrono::milliseconds(1000)) {
         std::unique_lock lock(mutex_);
         if (!cv_.wait_for(lock, timeout, [this]() { return !empty() || stopped_; })) {
             return 0;
@@ -119,9 +113,9 @@ public:
         if (stopped_ || empty()) {
             return 0;
         }
-        size_t to_read = std::min(count, size_);
+        std::size_t to_read = std::min(count, size_);
         
-        for (size_t i = 0; i < to_read; ++i) {
+        for (std::size_t i = 0; i < to_read; ++i) {
             items[i] = std::move(buffer_[read_idx_]);
             read_idx_ = (read_idx_ + 1) % capacity_;
             --size_;
@@ -146,16 +140,16 @@ public:
     
     bool empty() const { return size_ == 0; }
     bool full() const { return size_ == capacity_; }
-    size_t size() const { return size_; }
-    size_t capacity() const { return capacity_; }
-    size_t available() const { return capacity_ - size_; }
+    std::size_t size() const { return size_; }
+    std::size_t capacity() const { return capacity_; }
+    std::size_t available() const { return capacity_ - size_; }
 
 private:
     std::vector<T> buffer_;
-    size_t capacity_;
-    size_t read_idx_ = 0;
-    size_t write_idx_ = 0;
-    size_t size_ = 0;
+    std::size_t capacity_;
+    std::size_t read_idx_ = 0;
+    std::size_t write_idx_ = 0;
+    std::size_t size_ = 0;
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     bool stopped_ = false;

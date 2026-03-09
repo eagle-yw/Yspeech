@@ -1,12 +1,6 @@
 module;
 
 #include <nlohmann/json.hpp>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
-#include <thread>
-#include <functional>
-#include <atomic>
 
 export module yspeech.context;
 
@@ -507,6 +501,16 @@ private:
     std::condition_variable data_cv_;
     std::atomic<bool> data_ready_{false};
     std::atomic<bool> data_stopped_{false};
+    
+    ProcessingStats performance_stats_;
+    
+public:
+    ProcessingStats& performance_stats() { return performance_stats_; }
+    const ProcessingStats& performance_stats() const { return performance_stats_; }
+    
+    void record_operator_time(const std::string& op_id, double time_ms) {
+        std::unique_lock lock(mutex_);
+        performance_stats_.record_operator_time(op_id, time_ms);
+    }
 };
-
 }

@@ -12,12 +12,12 @@ namespace yspeech {
 export class LoggerAspect {
 public:
     std::any before(Context& ctx, const std::string& op_name) {
-        log_info("Entering operator: {}", op_name);
+        log_debug("Entering operator: {}", op_name);
         return {};
     }
 
     void after(Context& ctx, const std::string& op_name, std::any payload) {
-        log_info("Exiting operator: {}", op_name);
+        log_debug("Exiting operator: {}", op_name);
     }
 };
 

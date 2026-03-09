@@ -1,7 +1,6 @@
 module;
 
 #include <nlohmann/json.hpp>
-#include <typeinfo>
 
 export module yspeech.capability;
 

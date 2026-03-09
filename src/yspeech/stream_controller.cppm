@@ -1,9 +1,6 @@
 module;
 
 #include <nlohmann/json.hpp>
-#include <atomic>
-#include <thread>
-#include <functional>
 
 export module yspeech.stream_controller;
 
@@ -99,14 +96,14 @@ private:
             return;
         }
         
-        log_info("StreamController started, buffer: {}", buffer_key_);
+        log_debug("StreamController started, buffer: {}", buffer_key_);
         
         while (running_) {
             std::vector<T> chunk;
             bool has_data = data_source_(chunk);
             
             if (!has_data) {
-                log_info("StreamController: data source exhausted");
+                log_debug("StreamController: data source exhausted");
                 eof_reached_ = true;
                 break;
             }
@@ -121,7 +118,7 @@ private:
             ctx_->stop_data();
         }
         
-        log_info("StreamController stopped, pushed {} chunks", chunks_pushed_.load());
+        log_debug("StreamController stopped, pushed {} chunks", chunks_pushed_.load());
     }
 };
 

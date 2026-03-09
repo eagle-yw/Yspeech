@@ -1,10 +1,6 @@
 module;
 
 #include <nlohmann/json.hpp>
-#include <filesystem>
-#include <chrono>
-#include <fstream>
-#include <memory>
 
 export module yspeech.offline_asr;
 
@@ -77,7 +73,18 @@ public:
             throw std::runtime_error(std::format("JSON parse error: {}", e.what()));
         }
         
-        log_info("Loaded configuration from: {}", config_path_);
+        if (config_.contains("log_level")) {
+            std::string level_str = config_["log_level"].get<std::string>();
+            LogLevel level = LogLevel::Info;
+            if (level_str == "debug") level = LogLevel::Debug;
+            else if (level_str == "info") level = LogLevel::Info;
+            else if (level_str == "warn" || level_str == "warning") level = LogLevel::Warn;
+            else if (level_str == "error") level = LogLevel::Error;
+            else if (level_str == "none") level = LogLevel::None;
+            set_log_level(level);
+        }
+        
+        log_debug("Loaded configuration from: {}", config_path_);
     }
     
     void init_components() {
@@ -162,7 +169,7 @@ public:
         pipeline_manager_->run(*context_);
         
         auto end_time = std::chrono::steady_clock::now();
-        stats_.processing_time_ms = std::chrono::duration<double, std::milli>(
+        stats_.total_processing_time_ms = std::chrono::duration<double, std::milli>(
             end_time - start_time).count();
         
         if (context_->contains("asr_results")) {
@@ -174,7 +181,7 @@ public:
         }
         
         log_info("Processed file {}: {} results, {}ms", 
-                audio_file, results.size(), stats_.processing_time_ms);
+                audio_file, results.size(), stats_.total_processing_time_ms);
         
         return results;
     }

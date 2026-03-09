@@ -1,15 +1,6 @@
 module;
 
 #include <nlohmann/json.hpp>
-#include <atomic>
-#include <thread>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
-#include <functional>
-#include <filesystem>
-#include <chrono>
-#include <memory>
 
 export module yspeech.streaming_asr;
 
@@ -22,6 +13,7 @@ import yspeech.log;
 import yspeech.error;
 import yspeech.pipeline_config;
 import yspeech.ring_buffer;
+import yspeech.resource_monitor;
 import yspeech.op.silero_vad;
 import yspeech.op.feature.kaldi_fbank;
 import yspeech.op.asr.paraformer;
@@ -53,6 +45,8 @@ public:
     void on_result(ResultCallback callback);
     void on_vad(VadCallback callback);
     void on_status(StatusCallback callback);
+    void on_performance(PerformanceCallback callback);
+    void on_alert(AlertCallback callback);
     
     bool is_speaking() const;
     float get_confidence() const;
@@ -101,7 +95,18 @@ public:
             throw std::runtime_error(std::format("JSON parse error: {}", e.what()));
         }
         
-        log_info("Loaded configuration from: {}", config_path_);
+        if (config_.contains("log_level")) {
+            std::string level_str = config_["log_level"].get<std::string>();
+            LogLevel level = LogLevel::Info;
+            if (level_str == "debug") level = LogLevel::Debug;
+            else if (level_str == "info") level = LogLevel::Info;
+            else if (level_str == "warn" || level_str == "warning") level = LogLevel::Warn;
+            else if (level_str == "error") level = LogLevel::Error;
+            else if (level_str == "none") level = LogLevel::None;
+            set_log_level(level);
+        }
+        
+        log_debug("Loaded configuration from: {}", config_path_);
     }
     
     void init_components() {
@@ -162,8 +167,11 @@ public:
         }
         
         running_ = true;
+        stats_start_time_ = std::chrono::steady_clock::now();
         
         context_->set("streaming", true);
+        
+        ResourceMonitor::start_monitoring(100);
         
         result_thread_ = std::thread([this]() {
             while (running_) {
@@ -204,8 +212,13 @@ public:
                 if (context_->contains("vad_is_speech")) {
                     try {
                         bool is_speech = context_->get<bool>("vad_is_speech");
-                        if (vad_callback_ && is_speech != last_vad_state_) {
-                            vad_callback_(is_speech, 0, 0);
+                        if (is_speech != last_vad_state_) {
+                            if (is_speech && !last_vad_state_) {
+                                stats_.speech_segments_detected++;
+                            }
+                            if (vad_callback_) {
+                                vad_callback_(is_speech, 0, 0);
+                            }
                             last_vad_state_ = is_speech;
                         }
                     } catch (...) {
@@ -226,6 +239,8 @@ public:
         
         running_ = false;
         
+        ResourceMonitor::stop_monitoring();
+        
         if (input_ring_buffer_) {
             input_ring_buffer_->stop();
         }
@@ -242,6 +257,8 @@ public:
             result_thread_.join();
         }
         
+        finalize_stats();
+        
         log_info("Streaming ASR stopped");
     }
     
@@ -256,6 +273,7 @@ public:
         
         input_ring_buffer_->push_batch(audio.data(), audio.size());
         stats_.audio_chunks_processed++;
+        total_audio_samples_ += audio.size();
     }
     
     void push_audio(const float* data, size_t size) {
@@ -265,6 +283,7 @@ public:
         
         input_ring_buffer_->push_batch(data, size);
         stats_.audio_chunks_processed++;
+        total_audio_samples_ += size;
     }
 
     bool has_result() const {
@@ -304,6 +323,14 @@ public:
     void on_status(StatusCallback callback) {
         status_callback_ = std::move(callback);
     }
+    
+    void on_performance(PerformanceCallback callback) {
+        performance_callback_ = std::move(callback);
+    }
+    
+    void on_alert(AlertCallback callback) {
+        alert_callback_ = std::move(callback);
+    }
 
     bool is_speaking() const {
         if (context_ && context_->contains("is_speaking")) {
@@ -328,7 +355,38 @@ public:
     }
     
     ProcessingStats get_stats() const {
-        return stats_;
+        auto merged = stats_;
+        merge_operator_timings(merged);
+        return merged;
+    }
+    
+    void finalize_stats() {
+        auto end_time = std::chrono::steady_clock::now();
+        stats_.total_processing_time_ms = std::chrono::duration<double, std::milli>(
+            end_time - stats_start_time_).count();
+        
+        stats_.audio_duration_ms = static_cast<double>(total_audio_samples_) / 16000.0 * 1000.0;
+        
+        if (stats_.audio_duration_ms > 0) {
+            stats_.rtf = stats_.total_processing_time_ms / stats_.audio_duration_ms;
+        }
+        
+        auto resource = ResourceMonitor::get_peak();
+        stats_.peak_memory_mb = static_cast<double>(resource.peak_memory_mb);
+        stats_.avg_cpu_percent = resource.cpu_percent;
+        
+        merge_operator_timings(stats_);
+    }
+    
+    void merge_operator_timings(ProcessingStats& target) const {
+        if (context_) {
+            const auto& ctx_stats = context_->performance_stats();
+            for (const auto& [op_id, timing] : ctx_stats.operator_timings) {
+                if (target.operator_timings.find(op_id) == target.operator_timings.end()) {
+                    target.operator_timings[op_id] = timing;
+                }
+            }
+        }
     }
 
     const nlohmann::json& get_config() const {
@@ -350,6 +408,8 @@ private:
     
     std::atomic<bool> running_{false};
     ProcessingStats stats_;
+    std::chrono::steady_clock::time_point stats_start_time_;
+    std::atomic<size_t> total_audio_samples_{0};
     std::thread result_thread_;
     bool last_vad_state_ = false;
     
@@ -361,6 +421,8 @@ private:
     ResultCallback result_callback_;
     VadCallback vad_callback_;
     StatusCallback status_callback_;
+    PerformanceCallback performance_callback_;
+    AlertCallback alert_callback_;
 };
 
 StreamingAsr::StreamingAsr(const std::string& config_path)
@@ -413,6 +475,14 @@ void StreamingAsr::on_vad(VadCallback callback) {
 
 void StreamingAsr::on_status(StatusCallback callback) {
     impl_->on_status(std::move(callback));
+}
+
+void StreamingAsr::on_performance(PerformanceCallback callback) {
+    impl_->on_performance(std::move(callback));
+}
+
+void StreamingAsr::on_alert(AlertCallback callback) {
+    impl_->on_alert(std::move(callback));
 }
 
 bool StreamingAsr::is_speaking() const {

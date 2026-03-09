@@ -1,6 +1,7 @@
 {
   "name": "Streaming ASR",
   "version": "1.0",
+  "log_level": "info",
   "mode": "streaming",
   "input": {
     "type": "microphone",

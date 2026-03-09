@@ -2,13 +2,6 @@ module;
 
 #include <taskflow/taskflow.hpp>
 #include <nlohmann/json.hpp>
-#include <fstream>
-#include <atomic>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
-#include <thread>
-#include <functional>
 
 export module yspeech.pipeline;
 
@@ -17,6 +10,7 @@ import yspeech.error;
 import yspeech.state;
 import yspeech.context;
 import yspeech.aspect;
+import yspeech.aspect.timer;
 import yspeech.op;
 import yspeech.log;
 import yspeech.pipeline_config;
@@ -116,6 +110,7 @@ export class Pipeline {
 public:
     Pipeline() {
         delayed_queue_.start();
+        add_aspect(TimerAspect{});
     }
     
     ~Pipeline() {

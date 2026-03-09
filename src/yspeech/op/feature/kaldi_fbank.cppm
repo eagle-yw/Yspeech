@@ -2,11 +2,6 @@ module;
 
 #include <nlohmann/json.hpp>
 #include <kaldi-native-fbank/csrc/online-feature.h>
-#include <memory>
-#include <vector>
-#include <string>
-#include <fstream>
-#include <cmath>
 
 export module yspeech.op.feature.kaldi_fbank;
 
@@ -99,7 +94,7 @@ public:
             max_accumulated_frames_ = config["max_accumulated_frames"].get<int>();
         }
         
-        log_info("OpKaldiFbank initialized with KNF: num_bins={}, sample_rate={}, frame_shift={}ms, lfr={}/{}",
+        log_debug("OpKaldiFbank initialized with KNF: num_bins={}, sample_rate={}, frame_shift={}ms, lfr={}/{}",
                  opts.mel_opts.num_bins, opts.frame_opts.samp_freq, opts.frame_opts.frame_shift_ms,
                  lfr_window_size_, lfr_window_shift_);
     }
@@ -163,7 +158,7 @@ public:
                         accumulated_features_.end() - max_accumulated_frames_);
                 }
                 
-                log_info("Extracted {} frames (accumulated) of {}-dim Fbank features", 
+                log_debug("Extracted {} frames (accumulated) of {}-dim Fbank features", 
                          accumulated_features_.size(), fbank_->Dim() * lfr_window_size_);
             } else {
                 ctx.set(output_key_ + "_features", std::vector<std::vector<float>>{});
@@ -176,7 +171,7 @@ public:
             ctx.set(output_key_ + "_features", features);
             ctx.set(output_key_ + "_num_frames", static_cast<int>(features.size()));
             
-            log_info("Extracted {} frames of {}-dim Fbank features (LFR {}/{})", 
+            log_debug("Extracted {} frames of {}-dim Fbank features (LFR {}/{})", 
                      features.size(), fbank_->Dim() * lfr_window_size_,
                      lfr_window_size_, lfr_window_shift_);
         }
@@ -188,7 +183,6 @@ public:
         accumulated_features_.clear();
         fbank_.reset();
         frames_read_ = 0;
-        log_info("OpKaldiFbank deinitialized");
     }
 
     int feature_dim() const {

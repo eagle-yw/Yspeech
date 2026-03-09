@@ -33,6 +33,9 @@ target_sources(yspeech
     yspeech/offline_asr.cppm
     yspeech/streaming_asr.cppm
     yspeech/speech_processor.cppm
+    yspeech/performance_export.cppm
+    yspeech/resource_monitor.cppm
+    yspeech/performance_alert.cppm
     yspeech/yspeech.cppm
 )
 
@@ -40,7 +43,7 @@ target_link_libraries(yspeech
     PRIVATE
         onnxruntime
         taskflow
-        glog::glog
+        spdlog::spdlog
         kaldi-native-fbank-core
     PUBLIC
         nlohmann_json::nlohmann_json

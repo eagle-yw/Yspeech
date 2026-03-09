@@ -1,8 +1,6 @@
 module;
 
 #include <nlohmann/json.hpp>
-#include <fstream>
-#include <regex>
 
 export module yspeech.pipeline_config;
 

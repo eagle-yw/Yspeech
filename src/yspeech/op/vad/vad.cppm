@@ -25,11 +25,9 @@ public:
         if (config.contains("sample_rate")) {
             sample_rate_ = config["sample_rate"].get<int>();
         }
-        log_info("OpVad initialized with sample_rate: {}", sample_rate_);
     }
 
     void process(Context& ctx) {
-        log_info("OpVad::process");
     }
 
     void deinit() {

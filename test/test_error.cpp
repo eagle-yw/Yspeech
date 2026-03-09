@@ -147,9 +147,9 @@ TEST(ErrorTest, SerializationJsonValidity) {
     EXPECT_NO_THROW(json.dump());
     
     std::string json_str = json.dump();
-    EXPECT_NO_THROW(nlohmann::json::parse(json_str));
+    nlohmann::json parsed;
+    EXPECT_NO_THROW(parsed = nlohmann::json::parse(json_str));
     
-    nlohmann::json parsed = nlohmann::json::parse(json_str);
     EXPECT_EQ(parsed["source"], "op1");
     EXPECT_EQ(parsed["message"], "Test error with \"quotes\" and \\backslash\\");
 }
