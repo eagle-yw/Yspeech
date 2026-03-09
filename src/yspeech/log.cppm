@@ -9,10 +9,17 @@ export module yspeech.log;
 
 import std;
 
+// 全局函数，确保glog可以正确调用
+void custom_prefix_formatter(std::ostream& os, const google::LogMessage& msg, void* data) {
+    // 空实现，不输出任何前缀
+}
+
 namespace yspeech {
 
 export inline void log_init(const char* program_name) {
     google::InitGoogleLogging(program_name);
+    // 安装自定义前缀格式化器，不输出任何前缀
+    google::InstallPrefixFormatter(&custom_prefix_formatter);
 }
 
 export inline void log_shutdown() {
@@ -53,28 +60,28 @@ export struct FmtLoc {
 };
 
 export void log_debug(FmtLoc fmt_loc, auto&&... args) {
-    DLOG(INFO) << std::format("[{}] [DEBUG] [{}] {}", 
+    std::cout << std::format("[{}] [DEBUG] [{}] {}\n", 
                               detail::format_time(),
                               detail::format_location(fmt_loc.loc), 
                               std::vformat(fmt_loc.fmt, std::make_format_args(args...)));
 }
 
 export void log_info(FmtLoc fmt_loc, auto&&... args) {
-    LOG(INFO) << std::format("[{}] [INFO] [{}] {}", 
+    std::cout << std::format("[{}] [INFO] [{}] {}\n", 
                             detail::format_time(),
                             detail::format_location(fmt_loc.loc), 
                             std::vformat(fmt_loc.fmt, std::make_format_args(args...)));
 }
 
 export void log_warn(FmtLoc fmt_loc, auto&&... args) {
-    LOG(WARNING) << std::format("[{}] [WARN] [{}] {}", 
+    std::cout << std::format("[{}] [WARN] [{}] {}\n", 
                                 detail::format_time(),
                                 detail::format_location(fmt_loc.loc), 
                                 std::vformat(fmt_loc.fmt, std::make_format_args(args...)));
 }
 
 export void log_error(FmtLoc fmt_loc, auto&&... args) {
-    LOG(ERROR) << std::format("[{}] [ERROR] [{}] {}", 
+    std::cerr << std::format("[{}] [ERROR] [{}] {}\n", 
                               detail::format_time(),
                               detail::format_location(fmt_loc.loc), 
                               std::vformat(fmt_loc.fmt, std::make_format_args(args...)));
