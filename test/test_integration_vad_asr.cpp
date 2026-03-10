@@ -6,7 +6,7 @@
 
 import yspeech.context;
 import yspeech.types;
-import yspeech.op.vad.silero_vad;
+import yspeech.op.vad.silero;
 import yspeech.op.asr.base;
 import yspeech.op.asr.paraformer;
 import yspeech.op.asr.whisper;
