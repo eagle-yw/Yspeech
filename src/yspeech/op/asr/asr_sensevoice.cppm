@@ -277,21 +277,25 @@ private:
             std::string text;
             for (int tid : token_ids) {
                 auto it = id_to_token_.find(tid);
-                if (it != id_to_token_.end()) {
-                    std::string token = it->second;
-                    if (token.rfind("▁", 0) == 0) {
-                        text += " " + token.substr(3);
-                    } else {
-                        text += token;
-                    }
+                if (it == id_to_token_.end()) {
+                    continue;
+                }
+                std::string token = it->second;
+                if (token.rfind("▁", 0) == 0) {
+                    text += " " + token.substr(3);
+                } else if (token.rfind("<|", 0) == 0 && token.find("|>") != std::string::npos) {
+                    continue;
+                } else {
+                    text += token;
                 }
             }
 
+            
             size_t start = text.find_first_not_of(" ");
             if (start != std::string::npos) {
                 text = text.substr(start);
             }
-
+            
             result.text = text;
             result.confidence = 0.9f;
             result.language = language_;

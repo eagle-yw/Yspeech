@@ -14,6 +14,7 @@ export import yspeech.op;
 export import yspeech.op.vad;
 export import yspeech.op.feature.kaldi_fbank;
 export import yspeech.op.asr.paraformer;
+export import yspeech.op.asr.sensevoice;
 export import yspeech.pipeline_config;
 export import yspeech.pipeline;
 export import yspeech.pipeline_manager;

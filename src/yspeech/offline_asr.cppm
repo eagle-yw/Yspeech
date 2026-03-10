@@ -14,6 +14,7 @@ import yspeech.pipeline_config;
 import yspeech.audio.file;
 import yspeech.op.feature.kaldi_fbank;
 import yspeech.op.asr.paraformer;
+import yspeech.op.asr.sensevoice;
 
 namespace yspeech {
 
