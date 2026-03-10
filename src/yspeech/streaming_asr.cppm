@@ -15,9 +15,7 @@ import yspeech.pipeline_config;
 import yspeech.ring_buffer;
 import yspeech.resource_monitor;
 import yspeech.op.silero_vad;
-import yspeech.op.feature.kaldi_fbank;
-import yspeech.op.asr.paraformer;
-import yspeech.op.asr.sensevoice;
+import yspeech.operators;
 
 namespace yspeech {
 

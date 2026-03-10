@@ -35,6 +35,7 @@ target_sources(yspeech
     yspeech/performance_export.cppm
     yspeech/resource_monitor.cppm
     yspeech/performance_alert.cppm
+    yspeech/operators.cppm
     yspeech/yspeech.cppm
 )
 

@@ -12,9 +12,7 @@ import yspeech.log;
 import yspeech.error;
 import yspeech.pipeline_config;
 import yspeech.audio.file;
-import yspeech.op.feature.kaldi_fbank;
-import yspeech.op.asr.paraformer;
-import yspeech.op.asr.sensevoice;
+import yspeech.operators;
 
 namespace yspeech {
 
