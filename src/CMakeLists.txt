@@ -15,7 +15,7 @@ target_sources(yspeech
     yspeech/aspects/timer.cppm
     yspeech/op.cppm
     yspeech/op/vad/vad.cppm
-    yspeech/op/vad/silero_vad.cppm
+    yspeech/op/vad/silero.cppm
     yspeech/op/audio/audio_input.cppm
     yspeech/op/asr/asr_base.cppm
     yspeech/op/asr/asr_paraformer.cppm
