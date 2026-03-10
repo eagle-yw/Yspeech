@@ -17,6 +17,7 @@ import yspeech.resource_monitor;
 import yspeech.op.silero_vad;
 import yspeech.op.feature.kaldi_fbank;
 import yspeech.op.asr.paraformer;
+import yspeech.op.asr.sensevoice;
 
 namespace yspeech {
 
