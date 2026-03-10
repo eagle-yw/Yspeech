@@ -11,7 +11,7 @@ import yspeech.op.asr.base;
 import yspeech.op.asr.paraformer;
 import yspeech.op.asr.whisper;
 import yspeech.op.asr.sensevoice;
-import yspeech.op.feature.extract;
+import yspeech.op.feature.kaldi_fbank;
 
 using namespace yspeech;
 
@@ -60,29 +60,28 @@ protected:
 };
 
 TEST_F(TestFeatureExtract, BasicInit) {
-    OpFeatureExtract extractor;
+    OpKaldiFbank extractor;
 
     nlohmann::json config;
-    config["num_mel_bins"] = 80;
-    config["frame_length"] = 400;
-    config["frame_shift"] = 160;
+    config["num_bins"] = 80;
     config["sample_rate"] = 16000;
     config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "feature";
+    config["output_key"] = "fbank";
 
     EXPECT_NO_THROW(extractor.init(config));
 }
 
 TEST_F(TestFeatureExtract, ProcessAudio) {
-    OpFeatureExtract extractor;
+    OpKaldiFbank extractor;
 
     nlohmann::json config;
     config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "feature";
+    config["output_key"] = "fbank";
+    config["num_bins"] = 80;
+    config["sample_rate"] = 16000;
 
     extractor.init(config);
 
-    // Generate test audio (1 second of sine wave)
     std::vector<float> audio_data(16000);
     for (size_t i = 0; i < audio_data.size(); ++i) {
         audio_data[i] = std::sin(2.0f * M_PI * 440.0f * i / 16000.0f) * 0.5f;
@@ -94,30 +93,36 @@ TEST_F(TestFeatureExtract, ProcessAudio) {
 
     extractor.process(ctx_);
 
-    EXPECT_TRUE(ctx_.contains("feature_num_frames"));
-    int num_frames = ctx_.get<int>("feature_num_frames");
+    EXPECT_TRUE(ctx_.contains("fbank_num_frames"));
+    int num_frames = ctx_.get<int>("fbank_num_frames");
     EXPECT_GT(num_frames, 0);
 }
 
-TEST_F(TestFeatureExtract, FeatureExtractorClass) {
-    FeatureExtractor extractor;
+TEST_F(TestFeatureExtract, KaldiFbankFeatureDim) {
+    OpKaldiFbank extractor;
 
-    FbankConfig config;
-    config.num_mel_bins = 80;
-    config.sample_rate = 16000;
+    nlohmann::json config;
+    config["num_bins"] = 80;
+    config["sample_rate"] = 16000;
+    config["input_buffer_key"] = "audio_planar";
+    config["output_key"] = "fbank";
 
     extractor.init(config);
 
-    // Generate test audio
-    std::vector<float> audio(16000 * 2);  // 2 seconds
+    std::vector<float> audio(16000 * 2);
     for (size_t i = 0; i < audio.size(); ++i) {
         audio[i] = std::sin(2.0f * M_PI * 440.0f * i / 16000.0f) * 0.5f;
     }
 
-    auto features = extractor.extract_fbank(audio);
+    for (float sample : audio) {
+        ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
+    }
 
+    extractor.process(ctx_);
+
+    auto features = ctx_.get<std::vector<std::vector<float>>>("fbank_features");
     EXPECT_GT(features.size(), 0);
-    EXPECT_EQ(features[0].size(), 80);  // 80 mel bins
+    EXPECT_EQ(features[0].size(), 80);
 }
 
 // Test ParaFormer ASR

@@ -21,7 +21,6 @@ target_sources(yspeech
     yspeech/op/asr/asr_paraformer.cppm
     yspeech/op/asr/asr_whisper.cppm
     yspeech/op/asr/asr_sensevoice.cppm
-    yspeech/op/feature/feature_extract.cppm
     yspeech/op/feature/kaldi_fbank.cppm
     yspeech/pipeline_config.cppm
     yspeech/pipeline.cppm

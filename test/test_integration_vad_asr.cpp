@@ -11,7 +11,7 @@ import yspeech.op.asr.base;
 import yspeech.op.asr.paraformer;
 import yspeech.op.asr.whisper;
 import yspeech.op.asr.sensevoice;
-import yspeech.op.feature.extract;
+import yspeech.op.feature.kaldi_fbank;
 
 using namespace yspeech;
 
@@ -128,20 +128,20 @@ TEST_F(TestIntegrationVadAsr, FeatureExtractToAsrPipeline) {
         GTEST_SKIP() << "ParaFormer model not found";
     }
 
-    OpFeatureExtract feature_extract;
-    nlohmann::json feature_config;
-    feature_config["input_buffer_key"] = "audio_planar";
-    feature_config["output_key"] = "feature";
-    feature_config["num_mel_bins"] = 80;
-    feature_config["sample_rate"] = 16000;
-    feature_extract.init(feature_config);
+    OpKaldiFbank fbank;
+    nlohmann::json fbank_config;
+    fbank_config["input_buffer_key"] = "audio_planar";
+    fbank_config["output_key"] = "fbank";
+    fbank_config["num_bins"] = 80;
+    fbank_config["sample_rate"] = 16000;
+    fbank.init(fbank_config);
 
     OpAsrParaformer asr;
     nlohmann::json asr_config;
     asr_config["model_path"] = "test_data/paraformer.onnx";
     asr_config["tokens_path"] = "test_data/paraformer_tokens.txt";
     asr_config["language"] = "zh";
-    asr_config["input_buffer_key"] = "audio_planar";
+    asr_config["feature_input_key"] = "fbank";
     asr_config["output_key"] = "asr";
     asr.init(asr_config);
 
@@ -150,12 +150,10 @@ TEST_F(TestIntegrationVadAsr, FeatureExtractToAsrPipeline) {
         ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
     }
 
-    feature_extract.process(ctx_);
+    fbank.process(ctx_);
     asr.process(ctx_);
 
-    EXPECT_TRUE(ctx_.contains("feature_features"));
-    // ASR may output empty text for test audio, but should not crash
-    EXPECT_TRUE(ctx_.contains("asr_text") || true);  // Just verify no crash
+    EXPECT_TRUE(ctx_.contains("fbank_features"));
 }
 
 TEST_F(TestIntegrationVadAsr, CompleteVadToAsrPipeline) {

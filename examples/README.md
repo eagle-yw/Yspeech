@@ -16,8 +16,18 @@ cmake --build build
 
 #### 1. 离线 ASR 转录
 
+**ParaFormer (中文):**
 ```bash
-./build/examples/simple_transcribe examples/configs/simple_asr.json examples/model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+./build/examples/simple_transcribe \
+    examples/configs/offline_paraformer_asr.json \
+    model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+```
+
+**SenseVoice (多语言):**
+```bash
+./build/examples/simple_transcribe \
+    examples/configs/offline_sensevoice_asr.json \
+    model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/test_wavs/zh.wav
 ```
 
 **输出示例:**
@@ -31,16 +41,26 @@ cmake --build build
 
 #### 2. 流式 ASR 识别
 
+**ParaFormer (中文):**
 ```bash
-./build/examples/streaming_demo examples/configs/streaming_asr.json examples/model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+./build/examples/streaming_demo \
+    examples/configs/streaming_paraformer_asr.json \
+    model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+```
+
+**SenseVoice (多语言):**
+```bash
+./build/examples/streaming_demo \
+    examples/configs/streaming_sensevoice_asr.json \
+    model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/test_wavs/zh.wav
 ```
 
 **输出示例:**
 ```
 === Yspeech 流式 ASR 实际音频测试 ===
 
-配置文件: examples/configs/streaming_asr.json
-音频文件: examples/model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+配置文件: examples/configs/streaming_paraformer_asr.json
+音频文件: model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
 
 加载音频: 89834 样本, 1 通道, 16000Hz
 开始流式识别...
@@ -58,6 +78,27 @@ cmake --build build
 结果数: 40
 音频时长: 5614.62ms
 RTF: 0.218358
+```
+
+#### 3. 转录工具
+
+```bash
+# 基本用法
+./build/examples/transcribe_tool \
+    examples/configs/offline_paraformer_asr.json \
+    model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+
+# 详细输出
+./build/examples/transcribe_tool \
+    examples/configs/offline_sensevoice_asr.json \
+    model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/test_wavs/zh.wav \
+    --verbose
+
+# JSON 格式输出
+./build/examples/transcribe_tool \
+    examples/configs/offline_paraformer_asr.json \
+    model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+    --json
 ```
 
 ### 编译单个示例
@@ -80,15 +121,17 @@ cmake --build build --target simple_transcribe
 
 **运行:**
 ```bash
-./build/examples/simple_transcribe examples/configs/simple_asr.json
+./build/examples/simple_transcribe <配置文件> <音频文件>
 ```
 
 **代码示例:**
 ```cpp
-#include <yspeech/speech_processor>
+import std;
+import yspeech.offline_asr;
 
-int main() {
-    auto result = yspeech::transcribe("config.json", "audio.wav");
+int main(int argc, char* argv[]) {
+    yspeech::OfflineAsr asr(argv[1]);
+    auto result = asr.transcribe(argv[2]);
     std::println("识别结果：{}", result.text);
     return 0;
 }
@@ -104,7 +147,7 @@ cmake --build build --target streaming_demo
 
 **运行:**
 ```bash
-./build/examples/streaming_demo examples/configs/streaming_asr.json
+./build/examples/streaming_demo <配置文件> <音频文件>
 ```
 
 **代码示例:**
@@ -140,8 +183,7 @@ cmake --build build --target transcribe_tool
 
 **运行:**
 ```bash
-./build/examples/transcribe_tool config.json audio.wav --verbose
-./build/examples/transcribe_tool config.json audio.wav --json
+./build/examples/transcribe_tool <配置文件> <音频文件> [--verbose] [--json]
 ```
 
 **功能:**
@@ -154,12 +196,46 @@ cmake --build build --target transcribe_tool
 
 示例配置文件位于 `examples/configs/` 目录：
 
-- **simple_asr.json** - 最简单的离线 ASR 配置
-- **streaming_asr.json** - 流式 ASR 配置（麦克风输入）
-- **two_level_asr.json** - 两级 Pipeline 配置
-- **vad_only.json** - 仅 VAD 功能配置
+### 离线配置
+| 文件 | 说明 | ASR 模型 |
+|------|------|---------|
+| `offline_paraformer_asr.json` | 离线 ParaFormer | 中文语音识别 |
+| `offline_sensevoice_asr.json` | 离线 SenseVoice | 多语言 + 情感检测 |
+
+### 流式配置
+| 文件 | 说明 | ASR 模型 |
+|------|------|---------|
+| `streaming_paraformer_asr.json` | 流式 ParaFormer | 中文语音识别 |
+| `streaming_sensevoice_asr.json` | 流式 SenseVoice | 多语言 + 情感检测 |
+
+### 其他配置
+| 文件 | 说明 |
+|------|------|
+| `two_level_asr.json` | 两级 Pipeline 配置 |
+| `vad_only.json` | 仅 VAD 功能配置 |
 
 详细配置说明请参考 [configs/README.md](configs/README.md)。
+
+## 支持的 ASR 模型
+
+### ParaFormer
+- **语言**: 中文
+- **特点**: 高精度中文语音识别
+- **模型路径**: `model/asr/sherpa-onnx-paraformer-zh-2023-09-14/`
+
+### SenseVoice
+- **语言**: 中文、英语、粤语、日语、韩语（自动检测）
+- **特点**: 多语言 + 情感检测 + 逆文本规范化
+- **模型路径**: `model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/`
+
+**SenseVoice 配置参数:**
+```json
+{
+  "language": "auto",      // auto/zh/en/yue/ja/ko
+  "use_itn": true,         // 逆文本规范化
+  "detect_emotion": true   // 情感检测
+}
+```
 
 ## API 使用指南
 
@@ -299,9 +375,15 @@ cmake --build build
 ### Q: 如何选择合适的配置文件？
 
 A: 根据使用场景选择：
-- **离线文件转录**: 使用 `simple_asr.json` 或 `two_level_asr.json`
-- **实时麦克风输入**: 使用 `streaming_asr.json`
+- **离线文件转录**: 使用 `offline_paraformer_asr.json` 或 `offline_sensevoice_asr.json`
+- **实时麦克风输入**: 使用 `streaming_paraformer_asr.json` 或 `streaming_sensevoice_asr.json`
 - **仅语音活动检测**: 使用 `vad_only.json`
+
+### Q: ParaFormer 和 SenseVoice 如何选择？
+
+A: 
+- **ParaFormer**: 中文语音识别，精度高，速度快
+- **SenseVoice**: 多语言支持，带情感检测，适合国际化场景
 
 ### Q: 如何自定义配置？
 
