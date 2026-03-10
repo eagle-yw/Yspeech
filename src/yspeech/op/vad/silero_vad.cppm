@@ -3,7 +3,7 @@ module;
 #include <nlohmann/json.hpp>
 #include <onnxruntime_cxx_api.h>
 
-export module yspeech.op.silero_vad;
+export module yspeech.op.vad.silero_vad;
 
 import std;
 import yspeech.context;

@@ -5,7 +5,7 @@
 #include <cmath>
 
 import yspeech.context;
-import yspeech.op.silero_vad;
+import yspeech.op.vad.silero_vad;
 import yspeech.op.asr.paraformer;
 import yspeech.op.asr.whisper;
 import yspeech.op.asr.sensevoice;

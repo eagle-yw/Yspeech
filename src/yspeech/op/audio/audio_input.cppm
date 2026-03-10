@@ -2,7 +2,7 @@ module;
 
 #include <nlohmann/json.hpp>
 
-export module yspeech.op.audio_input;
+export module yspeech.op.audio.audio_input;
 
 import std;
 import yspeech.error;

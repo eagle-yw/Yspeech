@@ -14,7 +14,7 @@ import yspeech.error;
 import yspeech.pipeline_config;
 import yspeech.ring_buffer;
 import yspeech.resource_monitor;
-import yspeech.op.silero_vad;
+import yspeech.op.vad.silero_vad;
 import yspeech.operators;
 
 namespace yspeech {

@@ -3,7 +3,7 @@
 #include <fstream>
 
 import yspeech.context;
-import yspeech.op.silero_vad;
+import yspeech.op.vad.silero_vad;
 
 using namespace yspeech;
 
