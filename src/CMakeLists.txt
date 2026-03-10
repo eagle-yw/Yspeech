@@ -16,7 +16,7 @@ target_sources(yspeech
     yspeech/op.cppm
     yspeech/op/vad/vad.cppm
     yspeech/op/vad/silero.cppm
-    yspeech/op/audio/audio_input.cppm
+    yspeech/op/audio/converter.cppm
     yspeech/op/asr/base.cppm
     yspeech/op/asr/paraformer.cppm
     yspeech/op/asr/whisper.cppm

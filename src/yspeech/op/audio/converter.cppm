@@ -2,7 +2,7 @@ module;
 
 #include <nlohmann/json.hpp>
 
-export module yspeech.op.audio.audio_input;
+export module yspeech.op.audio.converter;
 
 import std;
 import yspeech.error;
@@ -13,14 +13,14 @@ import yspeech.types;
 
 namespace yspeech {
 
-export class OpAudioInput {
+export class OpAudioConverter {
 public:
-    OpAudioInput() = default;
+    OpAudioConverter() = default;
 
-    OpAudioInput(const OpAudioInput&) = delete;
-    OpAudioInput& operator=(const OpAudioInput&) = delete;
-    OpAudioInput(OpAudioInput&&) noexcept = default;
-    OpAudioInput& operator=(OpAudioInput&&) noexcept = default;
+    OpAudioConverter(const OpAudioConverter&) = delete;
+    OpAudioConverter& operator=(const OpAudioConverter&) = delete;
+    OpAudioConverter(OpAudioConverter&&) noexcept = default;
+    OpAudioConverter& operator=(OpAudioConverter&&) noexcept = default;
 
     void init(const nlohmann::json& config) {
         if (config.contains("input_buffer_key")) {
@@ -36,7 +36,7 @@ public:
             buffer_capacity_ = config["buffer_capacity"].get<size_t>();
         }
         
-        log_info("OpAudioInput initialized: input={}, output={}, channels={}", 
+        log_info("OpAudioConverter initialized: input={}, output={}, channels={}", 
                  input_buffer_key_, output_buffer_key_, num_channels_);
     }
 
@@ -100,7 +100,7 @@ private:
 
 namespace {
 
-OperatorRegistrar<OpAudioInput> registrar("AudioInput");
+OperatorRegistrar<OpAudioConverter> registrar("AudioConverter");
 
 }
 

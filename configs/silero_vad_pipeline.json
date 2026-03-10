@@ -22,8 +22,8 @@
       },
       "ops": [
         {
-          "id": "audio_input",
-          "name": "AudioInput",
+          "id": "audio_converter",
+          "name": "AudioConverter",
           "params": {
             "input_buffer_key": "audio_buffer",
             "output_buffer_key": "audio_planar",

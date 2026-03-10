@@ -24,8 +24,8 @@
       },
       "ops": [
         {
-          "id": "audio_input",
-          "name": "AudioInput",
+          "id": "audio_converter",
+          "name": "AudioConverter",
           "params": {
             "input_buffer_key": "audio_buffer",
             "output_buffer_key": "audio_planar",
@@ -46,7 +46,7 @@
             "sample_rate": 16000
           },
           "parallel": false,
-          "depends_on": ["audio_input"]
+          "depends_on": ["audio_converter"]
         },
         {
           "id": "asr_paraformer",
@@ -80,8 +80,8 @@
       },
       "ops": [
         {
-          "id": "audio_input",
-          "name": "AudioInput",
+          "id": "audio_converter",
+          "name": "AudioConverter",
           "params": {
             "input_buffer_key": "audio_buffer",
             "output_buffer_key": "audio_planar",
@@ -105,7 +105,7 @@
             "output_key": "asr"
           },
           "parallel": true,
-          "depends_on": ["audio_input"]
+          "depends_on": ["audio_converter"]
         }
       ]
     },
@@ -123,8 +123,8 @@
       },
       "ops": [
         {
-          "id": "audio_input",
-          "name": "AudioInput",
+          "id": "audio_converter",
+          "name": "AudioConverter",
           "params": {
             "input_buffer_key": "audio_buffer",
             "output_buffer_key": "audio_planar",
@@ -148,7 +148,7 @@
             "output_key": "asr"
           },
           "parallel": true,
-          "depends_on": ["audio_input"]
+          "depends_on": ["audio_converter"]
         }
       ]
     },
@@ -166,8 +166,8 @@
       },
       "ops": [
         {
-          "id": "audio_input",
-          "name": "AudioInput",
+          "id": "audio_converter",
+          "name": "AudioConverter",
           "params": {
             "input_buffer_key": "audio_buffer",
             "output_buffer_key": "audio_planar",
@@ -189,7 +189,7 @@
             "min_silence_duration_ms": 100
           },
           "parallel": true,
-          "depends_on": ["audio_input"]
+          "depends_on": ["audio_converter"]
         },
         {
           "id": "asr_paraformer",
