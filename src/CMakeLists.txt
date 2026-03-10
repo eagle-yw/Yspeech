@@ -17,10 +17,10 @@ target_sources(yspeech
     yspeech/op/vad/vad.cppm
     yspeech/op/vad/silero.cppm
     yspeech/op/audio/audio_input.cppm
-    yspeech/op/asr/asr_base.cppm
-    yspeech/op/asr/asr_paraformer.cppm
-    yspeech/op/asr/asr_whisper.cppm
-    yspeech/op/asr/asr_sensevoice.cppm
+    yspeech/op/asr/base.cppm
+    yspeech/op/asr/paraformer.cppm
+    yspeech/op/asr/whisper.cppm
+    yspeech/op/asr/sensevoice.cppm
     yspeech/op/feature/kaldi_fbank.cppm
     yspeech/pipeline_config.cppm
     yspeech/pipeline.cppm
