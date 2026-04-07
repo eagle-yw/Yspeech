@@ -4,6 +4,7 @@
 import yspeech;
 import yspeech.op.vad;
 import yspeech.op;
+import yspeech.stream_store;
 import std;
 
 TEST(TestPipeline, TestBuildAndRun) {
@@ -28,7 +29,10 @@ TEST(TestPipeline, TestBuildAndRun) {
     EXPECT_NO_THROW(pipeline.build(config_path));
     
     yspeech::Context ctx;
-    EXPECT_NO_THROW(pipeline.run(ctx));
+    yspeech::StreamStore store;
+    store.init_audio_ring("audio_frames", 8);
+    EXPECT_NO_THROW(pipeline.run_stream(ctx, store, false));
+    EXPECT_NO_THROW(pipeline.run_stream(ctx, store, true));
     
     std::remove(config_path.c_str());
 }

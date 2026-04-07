@@ -62,144 +62,119 @@ TEST(AudioBufferTest, RingBufferWrapAround) {
     EXPECT_EQ(value, 5);
 }
 
-TEST(AudioBufferTest, InitAudioBuffer) {
-    yspeech::Context ctx;
-    
-    ctx.init_audio_buffer("audio", 2, 16000);
-    
-    EXPECT_EQ(ctx.audio_buffer_available("audio"), 0);
+namespace {
+
+yspeech::AudioFramePtr make_frame(const std::vector<float>& samples,
+                                  std::uint64_t seq,
+                                  bool eos = false,
+                                  int channels = 1,
+                                  std::int64_t pts_ms = 0) {
+    static yspeech::AudioFramePool pool;
+    auto frame = pool.acquire(samples.size());
+    frame->stream_id = "test";
+    frame->seq = seq;
+    frame->sample_rate = 16000;
+    frame->channels = channels;
+    frame->pts_ms = pts_ms;
+    frame->dur_ms = 10;
+    frame->eos = eos;
+    frame->samples = samples;
+    return frame;
 }
 
-TEST(AudioBufferTest, WriteReadInterleaved) {
-    yspeech::Context ctx;
-    
-    ctx.init_audio_buffer("audio", 2, 100);
-    
-    float interleaved[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
-    EXPECT_TRUE(ctx.audio_buffer_write_interleaved("audio", interleaved, 3, 16000));
-    
-    EXPECT_EQ(ctx.audio_buffer_available("audio"), 3);
-    
-    yspeech::AudioData audio;
-    EXPECT_TRUE(ctx.audio_buffer_read("audio", audio, 2));
-    
-    EXPECT_EQ(audio.num_channels, 2);
-    EXPECT_EQ(audio.num_samples(), 2);
-    EXPECT_EQ(audio.channels[0].size(), 2);
-    EXPECT_EQ(audio.channels[1].size(), 2);
-    
-    EXPECT_FLOAT_EQ(audio.channels[0][0], 1.0f);
-    EXPECT_FLOAT_EQ(audio.channels[1][0], 2.0f);
-    EXPECT_FLOAT_EQ(audio.channels[0][1], 3.0f);
-    EXPECT_FLOAT_EQ(audio.channels[1][1], 4.0f);
 }
 
-TEST(AudioBufferTest, WriteReadPlanar) {
-    yspeech::Context ctx;
-    
-    ctx.init_audio_buffer("audio", 2, 100);
-    
-    float ch0[] = {1.0f, 2.0f, 3.0f};
-    float ch1[] = {4.0f, 5.0f, 6.0f};
-    const float* channels[] = {ch0, ch1};
-    
-    EXPECT_TRUE(ctx.audio_buffer_write_planar("audio", channels, 3, 16000));
-    
-    EXPECT_EQ(ctx.audio_buffer_available("audio"), 3);
-    
-    yspeech::AudioData audio;
-    EXPECT_TRUE(ctx.audio_buffer_read("audio", audio, 2));
-    
-    EXPECT_EQ(audio.num_channels, 2);
-    EXPECT_EQ(audio.num_samples(), 2);
-    
-    EXPECT_FLOAT_EQ(audio.channels[0][0], 1.0f);
-    EXPECT_FLOAT_EQ(audio.channels[0][1], 2.0f);
-    EXPECT_FLOAT_EQ(audio.channels[1][0], 4.0f);
-    EXPECT_FLOAT_EQ(audio.channels[1][1], 5.0f);
+TEST(AudioBufferTest, InitAudioStreamRing) {
+    yspeech::StreamStore store;
+    store.init_audio_ring("audio", 16);
+    EXPECT_TRUE(store.has_ring("audio"));
+    EXPECT_FALSE(store.has_unread("audio", "reader"));
 }
 
-TEST(AudioBufferTest, DifferentChunkSizes) {
-    yspeech::Context ctx;
-    
-    ctx.init_audio_buffer("audio", 1, 1000);
-    
-    float data[100];
-    for (int i = 0; i < 100; ++i) {
-        data[i] = static_cast<float>(i);
+TEST(AudioBufferTest, PushReadFrames) {
+    yspeech::StreamStore store;
+    store.init_audio_ring("audio", 16);
+
+    EXPECT_TRUE(store.push_frame("audio", make_frame({1.0f, 2.0f, 3.0f}, 0)));
+    EXPECT_TRUE(store.push_frame("audio", make_frame({4.0f, 5.0f, 6.0f}, 1, true)));
+
+    auto first = store.read_frame("audio", "reader");
+    ASSERT_EQ(first.status, yspeech::FrameReadStatus::Ok);
+    ASSERT_TRUE(first.frame);
+    EXPECT_EQ(first.frame->samples.size(), 3);
+    EXPECT_FLOAT_EQ(first.frame->samples[0], 1.0f);
+
+    auto second = store.read_frame("audio", "reader");
+    ASSERT_TRUE(second.status == yspeech::FrameReadStatus::Ok || second.status == yspeech::FrameReadStatus::Eof);
+    ASSERT_TRUE(second.frame);
+    EXPECT_TRUE(second.frame->eos);
+}
+
+TEST(AudioBufferTest, ReaderProgressByChunk) {
+    yspeech::StreamStore store;
+    store.init_audio_ring("audio", 32);
+
+    for (std::uint64_t i = 0; i < 5; ++i) {
+        EXPECT_TRUE(store.push_frame("audio", make_frame({static_cast<float>(i)}, i, i == 4)));
     }
-    
-    ctx.audio_buffer_write_interleaved("audio", data, 100, 16000);
-    
-    yspeech::AudioData audio1;
-    EXPECT_TRUE(ctx.audio_buffer_read("audio", audio1, 30));
-    EXPECT_EQ(audio1.num_samples(), 30);
-    
-    yspeech::AudioData audio2;
-    EXPECT_TRUE(ctx.audio_buffer_read("audio", audio2, 50));
-    EXPECT_EQ(audio2.num_samples(), 50);
-    
-    yspeech::AudioData audio3;
-    EXPECT_TRUE(ctx.audio_buffer_read("audio", audio3, 20));
-    EXPECT_EQ(audio3.num_samples(), 20);
-    
-    EXPECT_EQ(ctx.audio_buffer_available("audio"), 0);
+
+    int consumed = 0;
+    while (store.has_unread("audio", "reader")) {
+        auto result = store.read_frame("audio", "reader");
+        if (!result.frame) {
+            continue;
+        }
+        consumed++;
+    }
+
+    EXPECT_EQ(consumed, 5);
+    EXPECT_FALSE(store.has_unread("audio", "reader"));
 }
 
 TEST(AudioBufferTest, ThreadSafety) {
-    yspeech::Context ctx;
-    
-    ctx.init_audio_buffer("audio", 2, 10000);
-    
+    yspeech::StreamStore store;
+    store.init_audio_ring("audio", 2048);
+
     std::atomic<int> produced{0};
     std::atomic<int> consumed{0};
-    
-    std::thread producer([&ctx, &produced]() {
-        for (int i = 0; i < 100; ++i) {
-            float data[20];
-            for (int j = 0; j < 20; ++j) {
-                data[j] = static_cast<float>(i * 20 + j);
-            }
-            if (ctx.audio_buffer_write_interleaved("audio", data, 10, 16000)) {
-                produced += 10;
+
+    std::thread producer([&]() {
+        for (std::uint64_t i = 0; i < 100; ++i) {
+            if (store.push_frame("audio", make_frame({static_cast<float>(i)}, i, i == 99))) {
+                produced++;
             }
         }
     });
-    
-    std::thread consumer([&ctx, &consumed]() {
-        while (consumed < 1000) {
-            yspeech::AudioData audio;
-            if (ctx.audio_buffer_read("audio", audio, 10)) {
-                consumed += 10;
+
+    std::thread consumer([&]() {
+        while (consumed < 100) {
+            auto result = store.read_frame("audio", "reader");
+            if (result.frame) {
+                consumed++;
             }
         }
     });
-    
+
     producer.join();
     consumer.join();
+
+    EXPECT_EQ(produced.load(), 100);
+    EXPECT_EQ(consumed.load(), 100);
 }
 
-TEST(AudioInputTest, InterleavedToPlanarConversion) {
-    yspeech::Context ctx;
-    
-    ctx.init_audio_buffer("audio_planar", 2, 1000);
-    
-    int16_t pcm_data[] = {16384, -16384, 8192, -8192, 0, 0};
-    std::vector<float> float_data;
-    for (int i = 0; i < 6; ++i) {
-        float_data.push_back(static_cast<float>(pcm_data[i]) / 32768.0f);
-    }
-    
-    ctx.audio_buffer_write_interleaved("audio_planar", float_data.data(), 3, 16000);
-    
-    yspeech::AudioData audio;
-    EXPECT_TRUE(ctx.audio_buffer_read("audio_planar", audio, 3));
-    
-    EXPECT_EQ(audio.num_channels, 2);
-    EXPECT_EQ(audio.num_samples(), 3);
-    
-    EXPECT_NEAR(audio.channels[0][0], 0.5f, 0.001f);
-    EXPECT_NEAR(audio.channels[1][0], -0.5f, 0.001f);
-    EXPECT_NEAR(audio.channels[0][1], 0.25f, 0.001f);
-    EXPECT_NEAR(audio.channels[1][1], -0.25f, 0.001f);
+TEST(AudioInputTest, InterleavedFrameLayout) {
+    yspeech::StreamStore store;
+    store.init_audio_ring("audio", 4);
+
+    std::vector<float> interleaved = {0.5f, -0.5f, 0.25f, -0.25f, 0.0f, 0.0f};
+    EXPECT_TRUE(store.push_frame("audio", make_frame(interleaved, 0, true, 2)));
+
+    auto result = store.read_frame("audio", "reader");
+    ASSERT_TRUE(result.frame);
+    EXPECT_EQ(result.frame->channels, 2);
+    EXPECT_EQ(result.frame->samples_per_channel(), 3);
+    EXPECT_NEAR(result.frame->samples[0], 0.5f, 0.001f);
+    EXPECT_NEAR(result.frame->samples[1], -0.5f, 0.001f);
+    EXPECT_NEAR(result.frame->samples[2], 0.25f, 0.001f);
+    EXPECT_NEAR(result.frame->samples[3], -0.25f, 0.001f);
 }

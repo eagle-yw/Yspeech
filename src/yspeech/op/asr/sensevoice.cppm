@@ -54,46 +54,6 @@ public:
                  model_path_, detect_emotion_, use_itn_, language_);
     }
 
-    void process_batch(Context& ctx) override {
-        std::vector<std::vector<float>> features;
-
-        if (ctx.contains(feature_input_key_ + "_features")) {
-            features = ctx.get<std::vector<std::vector<float>>>(feature_input_key_ + "_features");
-            log_debug("Using features from {} with {} frames", feature_input_key_, features.size());
-        } else {
-            log_warn("No features found at {}_features", feature_input_key_);
-            return;
-        }
-
-        if (features.empty()) {
-            log_debug("Empty features");
-            return;
-        }
-
-        AsrResult result = infer(features);
-
-        ctx.set(output_key_ + "_text", result.text);
-        ctx.set(output_key_ + "_confidence", result.confidence);
-        ctx.set(output_key_ + "_language", result.language);
-        if (detect_emotion_ && !result.emotion.empty()) {
-            ctx.set(output_key_ + "_emotion", result.emotion);
-        }
-
-        std::vector<AsrResult> results;
-        if (ctx.contains(output_key_ + "_results")) {
-            results = ctx.get<std::vector<AsrResult>>(output_key_ + "_results");
-        }
-        results.push_back(result);
-        ctx.set(output_key_ + "_results", results);
-
-        auto events = ctx.get_or_default(output_key_ + "_events", std::vector<AsrEvent>{});
-        events.push_back(AsrEvent{.kind = AsrResultKind::StreamFinal, .result = result});
-        ctx.set(output_key_ + "_events", std::move(events));
-
-        log_info("SenseVoice ASR: text=\"{}\", language={}, emotion={}, confidence={:.2f}",
-                 result.text, result.language, result.emotion, result.confidence);
-    }
-
     bool ready(Context& ctx, StreamStore&) {
         const auto feature_version = ctx.get_or_default<std::uint64_t>(feature_input_key_ + "_version", 0);
         const auto segment_count = ctx.get_or_default(vad_input_key_ + "_segments", std::vector<VadSegment>{}).size();
@@ -107,7 +67,7 @@ public:
         return has_partial_work || has_segment_final_work;
     }
 
-    StreamProcessResult process_stream(Context& ctx, StreamStore&) {
+    StreamProcessResult process_stream(Context& ctx, StreamStore&) override {
         std::vector<std::vector<float>> features = ctx.get_or_default(
             feature_input_key_ + "_features", std::vector<std::vector<float>>{});
         if (features.empty()) {
@@ -168,7 +128,7 @@ public:
         };
     }
 
-    StreamProcessResult flush(Context& ctx, StreamStore&) {
+    StreamProcessResult flush(Context& ctx, StreamStore&) override {
         std::vector<std::vector<float>> features = ctx.get_or_default(
             feature_input_key_ + "_features", std::vector<std::vector<float>>{});
         if (features.empty()) {

@@ -31,6 +31,7 @@ public:
     EngineRuntime& operator=(EngineRuntime&&) noexcept = delete;
 
     void start();
+    void finish();
     void stop();
     bool is_running() const;
 
@@ -89,6 +90,8 @@ private:
     PerformanceAlerter alerter_;
     std::vector<float> pending_samples_;
     std::int64_t next_push_pts_ms_ = 0;
+    std::atomic<bool> has_input_{false};
+    std::atomic<bool> stream_finalized_{false};
 
     void load_config();
     void init_components();
@@ -103,6 +106,7 @@ private:
     void finalize_stats();
     void merge_operator_timings(ProcessingStats& target) const;
     ProcessingStats build_live_stats_snapshot() const;
+    void finalize_stream_if_needed();
 };
 
 EngineRuntime::EngineRuntime(const std::string& config_path)
@@ -127,6 +131,8 @@ void EngineRuntime::start() {
     }
 
     running_ = true;
+    has_input_.store(false, std::memory_order_release);
+    stream_finalized_.store(false, std::memory_order_release);
     stats_start_time_ = std::chrono::steady_clock::now();
     last_performance_emit_ = stats_start_time_;
 
@@ -161,7 +167,6 @@ void EngineRuntime::start() {
 
     source_thread_ = std::thread([this]() {
         if (offline_mode_) {
-            bool saw_input = false;
             while (running_) {
                 if (!active_frame_source_) {
                     break;
@@ -169,19 +174,12 @@ void EngineRuntime::start() {
 
                 AudioFramePtr frame;
                 if (!active_frame_source_->next(frame) || !frame) {
-                    context_->set("global_eof", true);
-                    if (saw_input) {
-                        pipeline_manager_->run_stream(*context_, *stream_store_, false);
-                        pipeline_manager_->run_stream(*context_, *stream_store_, true);
-                        has_pending_event_work_ = true;
-                        event_cv_.notify_one();
-                    }
+                    finalize_stream_if_needed();
                     emit_status("input_eof");
                     break;
                 }
 
                 store_frame(frame);
-                saw_input = true;
             }
             return;
         }
@@ -193,7 +191,7 @@ void EngineRuntime::start() {
 
             AudioFramePtr frame;
             if (!active_frame_source_->next(frame) || !frame) {
-                context_->set("global_eof", true);
+                finalize_stream_if_needed();
                 emit_status("input_eof");
                 break;
             }
@@ -203,6 +201,29 @@ void EngineRuntime::start() {
     });
 
     log_info("Engine runtime started");
+}
+
+void EngineRuntime::finish() {
+    if (!running_) {
+        return;
+    }
+
+    const bool using_default_source =
+        active_frame_source_ && default_frame_source_ &&
+        active_frame_source_.get() == default_frame_source_.get();
+
+    if (using_default_source && active_frame_source_) {
+        active_frame_source_->stop();
+    }
+
+    if (using_default_source && source_thread_.joinable()) {
+        source_thread_.join();
+        finalize_stream_if_needed();
+        drain_asr_events();
+        drain_vad_events();
+        has_pending_event_work_ = true;
+        event_cv_.notify_one();
+    }
 }
 
 void EngineRuntime::stop() {
@@ -221,6 +242,10 @@ void EngineRuntime::stop() {
     if (source_thread_.joinable()) {
         source_thread_.join();
     }
+
+    finalize_stream_if_needed();
+    drain_asr_events();
+    drain_vad_events();
 
     event_cv_.notify_all();
     if (event_thread_.joinable()) {
@@ -413,6 +438,7 @@ void EngineRuntime::store_frame(AudioFramePtr frame) {
     context_->set("audio_frame_gap", frame->gap);
     context_->set("audio_frame_eos", frame->eos);
     stream_store_->push_frame(frame_config_.audio_frame_key, frame);
+    has_input_.store(true, std::memory_order_release);
 
     if (!frame->samples.empty()) {
         total_audio_samples_ += frame->samples_per_channel();
@@ -434,11 +460,30 @@ void EngineRuntime::ingest_frame(AudioFramePtr frame) {
 
     pipeline_manager_->run_stream(*context_, *stream_store_, false);
     if (frame->eos) {
+        stream_finalized_.store(true, std::memory_order_release);
         pipeline_manager_->run_stream(*context_, *stream_store_, true);
     }
 
     has_pending_event_work_ = true;
     event_cv_.notify_one();
+}
+
+void EngineRuntime::finalize_stream_if_needed() {
+    if (!context_ || !pipeline_manager_ || !stream_store_) {
+        return;
+    }
+    if (!has_input_.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (stream_finalized_.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    context_->set("global_eof", true);
+    if (offline_mode_) {
+        pipeline_manager_->run_stream(*context_, *stream_store_, false);
+    }
+    pipeline_manager_->run_stream(*context_, *stream_store_, true);
 }
 
 void EngineRuntime::drain_asr_events() {

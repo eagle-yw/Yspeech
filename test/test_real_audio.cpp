@@ -5,6 +5,7 @@
 import yspeech.audio.file;
 import yspeech.audio;
 import yspeech.context;
+import yspeech;
 import yspeech.types;
 import std;
 
@@ -167,7 +168,7 @@ TEST_F(TestRealAudio, FileProperties) {
     }
 }
 
-TEST_F(TestRealAudio, ContextAudioBuffer) {
+TEST_F(TestRealAudio, FileSourceFrames) {
     auto all_files = get_all_audio_files();
     
     if (all_files.empty()) {
@@ -175,53 +176,25 @@ TEST_F(TestRealAudio, ContextAudioBuffer) {
     }
     
     const auto& test_file = all_files[0];
-    
-    auto file_stream = yspeech::AudioFileStream(test_file.string());
-    int num_channels = file_stream.micNum();
-    int sample_rate = static_cast<int>(file_stream.sampleRate());
-    
-    yspeech::Context ctx;
-    ctx.init_audio_buffer("test_audio", num_channels, 16000 * 10);
-    
-    yspeech::Bytes buffer;
-    buffer.resize(8192);
-    auto audio_stream = yspeech::AudioStreamIface(std::move(file_stream));
-    
-    size_t total_bytes_read = 0;
-    size_t read_count = 0;
-    yspeech::Size bytes_read;
-    
-    do {
-        bytes_read = audio_stream.read(buffer.data(), buffer.size());
-        if (bytes_read > 0) {
-            std::vector<float> float_data;
-            size_t num_samples = bytes_read / sizeof(int16_t);
-            float_data.reserve(num_samples);
-            
-            const int16_t* pcm_data = reinterpret_cast<const int16_t*>(buffer.data());
-            for (size_t i = 0; i < num_samples; ++i) {
-                float_data.push_back(static_cast<float>(pcm_data[i]) / 32768.0f);
-            }
-            
-            size_t num_frames = num_samples / num_channels;
-            if (ctx.audio_buffer_write_interleaved("test_audio", float_data.data(), num_frames, sample_rate)) {
-                total_bytes_read += bytes_read;
-                read_count++;
-            }
+
+    auto file_source = yspeech::FileSource(test_file.string(), "test_file", 1.0, false);
+
+    yspeech::AudioFramePtr frame;
+    int frame_count = 0;
+    int sample_rate = 0;
+    int channels = 0;
+    while (file_source.next(frame) && frame) {
+        frame_count++;
+        sample_rate = frame->sample_rate;
+        channels = frame->channels;
+        if (frame->eos) {
+            break;
         }
-    } while (bytes_read > 0);
-    
-    EXPECT_GT(total_bytes_read, 0);
-    EXPECT_GT(read_count, 0);
-    EXPECT_GT(ctx.audio_buffer_available("test_audio"), 0);
-    
-    yspeech::AudioData audio_data;
-    size_t samples_to_read = std::min(size_t(1600), ctx.audio_buffer_available("test_audio"));
-    if (samples_to_read > 0) {
-        EXPECT_TRUE(ctx.audio_buffer_read("test_audio", audio_data, samples_to_read));
-        EXPECT_EQ(audio_data.num_channels, num_channels);
-        EXPECT_EQ(audio_data.num_samples(), samples_to_read);
     }
+
+    EXPECT_GT(frame_count, 0);
+    EXPECT_GT(sample_rate, 0);
+    EXPECT_GT(channels, 0);
 }
 
 TEST_F(TestRealAudio, ProcessingPerformance) {

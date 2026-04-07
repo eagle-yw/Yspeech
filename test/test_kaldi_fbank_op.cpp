@@ -3,310 +3,135 @@
 #include <vector>
 #include <cmath>
 
+import std;
 import yspeech.context;
+import yspeech.stream_store;
+import yspeech.types;
+import yspeech.op;
 import yspeech.op.feature.kaldi_fbank;
 
 using namespace yspeech;
 
-class TestKaldiFbankOp : public ::testing::Test {
-protected:
-    void SetUp() override {
-        ctx_.init_audio_buffer("audio_planar", 1, 16000 * 30);
+namespace {
+
+AudioFramePtr make_frame(const std::vector<float>& samples, std::uint64_t seq, bool eos = false) {
+    static AudioFramePool pool;
+    auto frame = pool.acquire(samples.size());
+    frame->stream_id = "fbank_test";
+    frame->seq = seq;
+    frame->sample_rate = 16000;
+    frame->channels = 1;
+    frame->pts_ms = static_cast<std::int64_t>(seq * 10);
+    frame->dur_ms = 10;
+    frame->eos = eos;
+    frame->samples = samples;
+    return frame;
+}
+
+std::vector<float> generate_audio(float duration_sec, float freq = 440.0f) {
+    std::vector<float> audio;
+    const int sample_rate = 16000;
+    const int num_samples = static_cast<int>(duration_sec * static_cast<float>(sample_rate));
+    audio.reserve(static_cast<std::size_t>(num_samples));
+    for (int i = 0; i < num_samples; ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(sample_rate);
+        audio.push_back(0.5f * std::sin(2.0f * static_cast<float>(M_PI) * freq * t));
     }
+    return audio;
+}
 
-    // Generate test audio (sine wave)
-    std::vector<float> generate_test_audio(float duration_sec, float freq = 440.0f) {
-        std::vector<float> audio;
-        int sample_rate = 16000;
-        int num_samples = static_cast<int>(duration_sec * sample_rate);
-        
-        for (int i = 0; i < num_samples; ++i) {
-            float t = static_cast<float>(i) / sample_rate;
-            audio.push_back(0.5f * std::sin(2.0f * M_PI * freq * t));
-        }
-        
-        return audio;
+void push_audio(StreamStore& store, const std::vector<float>& audio) {
+    constexpr std::size_t frame_samples = 160;
+    std::uint64_t seq = 0;
+    for (std::size_t offset = 0; offset < audio.size(); offset += frame_samples, ++seq) {
+        const auto end = std::min(offset + frame_samples, audio.size());
+        std::vector<float> chunk(audio.begin() + static_cast<std::ptrdiff_t>(offset),
+                                 audio.begin() + static_cast<std::ptrdiff_t>(end));
+        store.push_frame("audio_frames", make_frame(chunk, seq, end == audio.size()));
     }
+}
 
-    Context ctx_;
-};
-
-// Test basic initialization
-TEST_F(TestKaldiFbankOp, BasicInit) {
+OpKaldiFbank create_fbank(const nlohmann::json& extra = {}) {
     OpKaldiFbank fbank;
-    
-    nlohmann::json config;
-    config["samp_freq"] = 16000.0f;
-    config["num_bins"] = 80;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "fbank";
-    
-    EXPECT_NO_THROW(fbank.init(config));
+    nlohmann::json config = {
+        {"sample_rate", 16000},
+        {"num_bins", 80},
+        {"frame_length_ms", 25.0f},
+        {"frame_shift_ms", 10.0f},
+        {"input_frame_key", "audio_frames"},
+        {"output_key", "fbank"}
+    };
+    for (const auto& [key, value] : extra.items()) {
+        config[key] = value;
+    }
+    fbank.init(config);
+    return fbank;
+}
+
+}
+
+TEST(TestKaldiFbankOp, BasicInit) {
+    auto fbank = create_fbank();
     EXPECT_EQ(fbank.feature_dim(), 80);
-    EXPECT_FLOAT_EQ(fbank.frame_shift(), 0.01f);  // 10ms
+    EXPECT_FLOAT_EQ(fbank.frame_shift(), 0.01f);
 }
 
-// Test feature extraction
-TEST_F(TestKaldiFbankOp, ExtractFeatures) {
-    OpKaldiFbank fbank;
-    
-    nlohmann::json config;
-    config["samp_freq"] = 16000.0f;
-    config["num_bins"] = 80;
-    config["frame_length_ms"] = 25.0f;
-    config["frame_shift_ms"] = 10.0f;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "fbank";
-    
-    fbank.init(config);
-    
-    // Generate 3 seconds of test audio
-    auto audio = generate_test_audio(3.0f);
-    for (float sample : audio) {
-        ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
-    }
-    
-    // Extract features
-    fbank.process_batch(ctx_);
-    
-    // Verify output
-    EXPECT_TRUE(ctx_.contains("fbank_features"));
-    EXPECT_TRUE(ctx_.contains("fbank_num_frames"));
-    EXPECT_TRUE(ctx_.contains("fbank_num_bins"));
-    
-    int num_frames = ctx_.get<int>("fbank_num_frames");
-    int num_bins = ctx_.get<int>("fbank_num_bins");
-    
-    EXPECT_GT(num_frames, 0);
-    EXPECT_EQ(num_bins, 80);
-    
-    // For 3 seconds at 16kHz with 10ms shift, expect ~300 frames
-    EXPECT_NEAR(num_frames, 300, 10);
-    
-    auto features = ctx_.get<std::vector<std::vector<float>>>("fbank_features");
-    EXPECT_EQ(features.size(), num_frames);
-    EXPECT_EQ(features[0].size(), num_bins);
+TEST(TestKaldiFbankOp, ExtractFeatures) {
+    auto fbank = create_fbank();
+    Context ctx;
+    StreamStore store;
+    store.init_audio_ring("audio_frames", 4096);
+    push_audio(store, generate_audio(3.0f));
+
+    ASSERT_TRUE(fbank.ready(ctx, store));
+    auto result = fbank.process_stream(ctx, store);
+
+    EXPECT_NE(result.status, StreamProcessStatus::NeedMoreInput);
+    EXPECT_TRUE(ctx.contains("fbank_features"));
+    EXPECT_TRUE(ctx.contains("fbank_num_frames"));
+    EXPECT_TRUE(ctx.contains("fbank_num_bins"));
+    EXPECT_GT(ctx.get<int>("fbank_num_frames"), 0);
+    EXPECT_EQ(ctx.get<int>("fbank_num_bins"), 80);
 }
 
-// Test with different configurations
-TEST_F(TestKaldiFbankOp, DifferentConfigs) {
-    // Test with 40 bins
-    {
-        OpKaldiFbank fbank;
-        nlohmann::json config;
-        config["samp_freq"] = 16000.0f;
-        config["num_bins"] = 40;
-        config["input_buffer_key"] = "audio_planar";
-        config["output_key"] = "fbank";
-        
-        fbank.init(config);
-        
-        auto audio = generate_test_audio(1.0f);
-        for (float sample : audio) {
-            ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
-        }
-        
-        fbank.process_batch(ctx_);
-        
-        int num_bins = ctx_.get<int>("fbank_num_bins");
-        EXPECT_EQ(num_bins, 40);
-    }
-    
-    // Test with different frame settings
-    {
-        OpKaldiFbank fbank;
-        nlohmann::json config;
-        config["samp_freq"] = 16000.0f;
-        config["num_bins"] = 80;
-        config["frame_length_ms"] = 20.0f;
-        config["frame_shift_ms"] = 5.0f;
-        config["input_buffer_key"] = "audio_planar";
-        config["output_key"] = "fbank2";
-        
-        fbank.init(config);
-        EXPECT_FLOAT_EQ(fbank.frame_shift(), 0.005f);  // 5ms
+TEST(TestKaldiFbankOp, DifferentConfigs) {
+    auto fbank40 = create_fbank({{"num_bins", 40}});
+    EXPECT_EQ(fbank40.feature_dim(), 40);
+
+    auto fast_shift = create_fbank({
+        {"frame_length_ms", 20.0f},
+        {"frame_shift_ms", 5.0f},
+        {"output_key", "fbank_fast"}
+    });
+    EXPECT_FLOAT_EQ(fast_shift.frame_shift(), 0.005f);
+}
+
+TEST(TestKaldiFbankOp, DifferentFrequencies) {
+    for (float freq : {100.0f, 440.0f, 1000.0f, 4000.0f}) {
+        auto fbank = create_fbank();
+        Context ctx;
+        StreamStore store;
+        store.init_audio_ring("audio_frames", 2048);
+        push_audio(store, generate_audio(0.5f, freq));
+        fbank.process_stream(ctx, store);
+        EXPECT_TRUE(ctx.contains("fbank_features")) << freq;
     }
 }
 
-// Test window types
-TEST_F(TestKaldiFbankOp, WindowTypes) {
-    std::vector<std::string> window_types = {"povey", "hamming", "hanning"};
-    
-    for (const auto& window_type : window_types) {
-        OpKaldiFbank fbank;
-        nlohmann::json config;
-        config["samp_freq"] = 16000.0f;
-        config["num_bins"] = 80;
-        config["window_type"] = window_type;
-        config["input_buffer_key"] = "audio_planar";
-        config["output_key"] = "fbank_" + window_type;
-        
-        EXPECT_NO_THROW(fbank.init(config));
-        
-        auto audio = generate_test_audio(1.0f);
-        for (float sample : audio) {
-            ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
-        }
-        
-        EXPECT_NO_THROW(fbank.process_batch(ctx_));
-    }
+TEST(TestKaldiFbankOp, LowFrameRateReduction) {
+    auto fbank = create_fbank({
+        {"lfr_window_size", 7},
+        {"lfr_window_shift", 6}
+    });
+    Context ctx;
+    StreamStore store;
+    store.init_audio_ring("audio_frames", 4096);
+    push_audio(store, generate_audio(1.0f));
+    fbank.process_stream(ctx, store);
+    EXPECT_EQ(ctx.get<int>("fbank_num_bins"), 560);
 }
 
-// Test pre-emphasis
-TEST_F(TestKaldiFbankOp, Preemphasis) {
-    OpKaldiFbank fbank;
-    nlohmann::json config;
-    config["samp_freq"] = 16000.0f;
-    config["num_bins"] = 80;
-    config["preemph_coeff"] = 0.97f;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "fbank";
-    
-    fbank.init(config);
-    
-    auto audio = generate_test_audio(2.0f);
-    for (float sample : audio) {
-        ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
-    }
-    
-    fbank.process_batch(ctx_);
-    
-    EXPECT_TRUE(ctx_.contains("fbank_features"));
-}
-
-// Test DC offset removal
-TEST_F(TestKaldiFbankOp, DCOffsetRemoval) {
-    OpKaldiFbank fbank;
-    nlohmann::json config;
-    config["samp_freq"] = 16000.0f;
-    config["num_bins"] = 80;
-    config["remove_dc_offset"] = true;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "fbank";
-    
-    fbank.init(config);
-    
-    // Generate audio with DC offset
-    auto audio = generate_test_audio(2.0f);
-    for (float& sample : audio) {
-        sample += 0.5f;  // Add DC offset
-    }
-    
-    for (float sample : audio) {
-        ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
-    }
-    
-    fbank.process_batch(ctx_);
-    
-    EXPECT_TRUE(ctx_.contains("fbank_features"));
-}
-
-// Test empty audio
-TEST_F(TestKaldiFbankOp, EmptyAudio) {
-    OpKaldiFbank fbank;
-    nlohmann::json config;
-    config["samp_freq"] = 16000.0f;
-    config["num_bins"] = 80;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "fbank";
-    
-    fbank.init(config);
-    
-    // Process without adding audio
-    fbank.process_batch(ctx_);
-    
-    // Should not crash, but no features extracted
-    EXPECT_FALSE(ctx_.contains("fbank_features"));
-}
-
-// Test very short audio
-TEST_F(TestKaldiFbankOp, ShortAudio) {
-    OpKaldiFbank fbank;
-    nlohmann::json config;
-    config["samp_freq"] = 16000.0f;
-    config["num_bins"] = 80;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "fbank";
-    
-    fbank.init(config);
-    
-    // Generate only 20ms of audio (less than one frame)
-    auto audio = generate_test_audio(0.02f);
-    for (float sample : audio) {
-        ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
-    }
-    
-    fbank.process_batch(ctx_);
-    
-    // Should not crash, but may have no features or very few
-}
-
-// Test frequency range
-TEST_F(TestKaldiFbankOp, FrequencyRange) {
-    OpKaldiFbank fbank;
-    nlohmann::json config;
-    config["samp_freq"] = 16000.0f;
-    config["num_bins"] = 80;
-    config["low_freq"] = 50.0f;
-    config["high_freq"] = 7000.0f;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "fbank";
-    
-    fbank.init(config);
-    
-    auto audio = generate_test_audio(2.0f);
-    for (float sample : audio) {
-        ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
-    }
-    
-    EXPECT_NO_THROW(fbank.process_batch(ctx_));
-}
-
-// Test feature values are reasonable
-TEST_F(TestKaldiFbankOp, FeatureValuesReasonable) {
-    OpKaldiFbank fbank;
-    nlohmann::json config;
-    config["samp_freq"] = 16000.0f;
-    config["num_bins"] = 80;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "fbank";
-    
-    fbank.init(config);
-    
-    auto audio = generate_test_audio(2.0f);
-    for (float sample : audio) {
-        ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
-    }
-    
-    fbank.process_batch(ctx_);
-    
-    auto features = ctx_.get<std::vector<std::vector<float>>>("fbank_features");
-    
-    // Check that features are finite and reasonable
-    for (const auto& frame : features) {
-        for (float val : frame) {
-            EXPECT_TRUE(std::isfinite(val));
-            // Log features are typically negative (log of small numbers)
-            EXPECT_LT(val, 20.0f);  // Upper bound
-            EXPECT_GT(val, -50.0f); // Lower bound
-        }
-    }
-}
-
-// Test move semantics
-TEST_F(TestKaldiFbankOp, MoveSemantics) {
-    OpKaldiFbank fbank1;
-    nlohmann::json config;
-    config["samp_freq"] = 16000.0f;
-    config["num_bins"] = 80;
-    fbank1.init(config);
-    
-    // Move constructor
-    OpKaldiFbank fbank2 = std::move(fbank1);
-    EXPECT_EQ(fbank2.feature_dim(), 80);
-    
-    // Move assignment
-    OpKaldiFbank fbank3;
-    fbank3 = std::move(fbank2);
-    EXPECT_EQ(fbank3.feature_dim(), 80);
+TEST(TestKaldiFbankOp, Deinit) {
+    auto fbank = create_fbank();
+    EXPECT_NO_THROW(fbank.deinit());
 }

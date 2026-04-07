@@ -35,6 +35,7 @@ int main(int argc, char* argv[]) {
         });
 
         engine.start();
+        engine.finish();
         while (!engine.input_eof_reached()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }

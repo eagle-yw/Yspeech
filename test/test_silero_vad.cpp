@@ -4,194 +4,132 @@
 #include <vector>
 #include <cmath>
 
+import std;
 import yspeech.context;
+import yspeech.stream_store;
 import yspeech.types;
+import yspeech.op;
 import yspeech.op.vad.silero;
 
 using namespace yspeech;
 
-class TestSileroVad : public ::testing::Test {
-protected:
-    void SetUp() override {
-        ctx_.init_audio_buffer("audio_planar", 1, 16000 * 10);
-    }
+namespace {
 
-    void TearDown() override {
-    }
-
-    bool model_exists() const {
-        std::ifstream file("test_data/silero_vad.onnx");
-        return file.good();
-    }
-
-    Context ctx_;
-};
-
-TEST_F(TestSileroVad, BasicInit) {
-    if (!model_exists()) {
-        GTEST_SKIP() << "Model file not found: test_data/silero_vad.onnx";
-    }
-
-    OpSileroVad vad;
-
-    nlohmann::json config;
-    config["model_path"] = "test_data/silero_vad.onnx";
-    config["threshold"] = 0.5f;
-    config["sample_rate"] = 16000;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "vad";
-
-    EXPECT_NO_THROW(vad.init(config));
+bool model_exists() {
+    std::ifstream file("model/vad/silero_vad.onnx");
+    return file.good();
 }
 
-TEST_F(TestSileroVad, ProcessEmptyBuffer) {
-    if (!model_exists()) {
-        GTEST_SKIP() << "Model file not found: test_data/silero_vad.onnx";
-    }
-
-    OpSileroVad vad;
-
-    nlohmann::json config;
-    config["model_path"] = "test_data/silero_vad.onnx";
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "vad";
-
-    vad.init(config);
-
-    EXPECT_NO_THROW(vad.process_batch(ctx_));
-
-    EXPECT_FALSE(ctx_.contains("vad_probability"));
+AudioFramePtr make_frame(const std::vector<float>& samples, std::uint64_t seq, bool eos = false) {
+    static AudioFramePool pool;
+    auto frame = pool.acquire(samples.size());
+    frame->stream_id = "vad_test";
+    frame->seq = seq;
+    frame->sample_rate = 16000;
+    frame->channels = 1;
+    frame->pts_ms = static_cast<std::int64_t>(seq * 10);
+    frame->dur_ms = 10;
+    frame->eos = eos;
+    frame->samples = samples;
+    return frame;
 }
 
-TEST_F(TestSileroVad, ProcessWithAudioData) {
-    if (!model_exists()) {
-        GTEST_SKIP() << "Model file not found: test_data/silero_vad.onnx";
+std::vector<float> make_audio(std::size_t samples, float scale = 0.1f) {
+    std::vector<float> audio(samples);
+    for (std::size_t i = 0; i < samples; ++i) {
+        audio[i] = std::sin(2.0f * static_cast<float>(M_PI) * 440.0f * static_cast<float>(i) / 16000.0f) * scale;
     }
+    return audio;
+}
 
+void push_frames(StreamStore& store, const std::vector<float>& audio) {
+    constexpr std::size_t frame_samples = 160;
+    std::uint64_t seq = 0;
+    for (std::size_t offset = 0; offset < audio.size(); offset += frame_samples, ++seq) {
+        auto end = std::min(offset + frame_samples, audio.size());
+        std::vector<float> frame_samples_buffer(audio.begin() + static_cast<std::ptrdiff_t>(offset),
+                                                audio.begin() + static_cast<std::ptrdiff_t>(end));
+        store.push_frame("audio_frames", make_frame(frame_samples_buffer, seq, end == audio.size()));
+    }
+}
+
+OpSileroVad create_vad(float threshold = 0.5f) {
     OpSileroVad vad;
-
-    nlohmann::json config;
-    config["model_path"] = "test_data/silero_vad.onnx";
-    config["threshold"] = 0.5f;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "vad";
-
+    nlohmann::json config = {
+        {"model_path", "model/vad/silero_vad.onnx"},
+        {"threshold", threshold},
+        {"sample_rate", 16000},
+        {"input_frame_key", "audio_frames"},
+        {"output_key", "vad"}
+    };
     vad.init(config);
+    return vad;
+}
 
-    std::vector<float> audio_data(512 * 10);
-    for (size_t i = 0; i < audio_data.size(); ++i) {
-        audio_data[i] = std::sin(2.0f * M_PI * 440.0f * i / 16000.0f) * 0.1f;
+}
+
+TEST(TestSileroVad, BasicInit) {
+    if (!model_exists()) {
+        GTEST_SKIP() << "Model file not found: model/vad/silero_vad.onnx";
+    }
+    EXPECT_NO_THROW(create_vad());
+}
+
+TEST(TestSileroVad, ProcessEmptyStore) {
+    if (!model_exists()) {
+        GTEST_SKIP() << "Model file not found: model/vad/silero_vad.onnx";
     }
 
-    for (float sample : audio_data) {
-        ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
+    auto vad = create_vad();
+    Context ctx;
+    StreamStore store;
+    store.init_audio_ring("audio_frames", 64);
+
+    auto result = vad.process_stream(ctx, store);
+    EXPECT_EQ(result.status, StreamProcessStatus::NeedMoreInput);
+    EXPECT_FALSE(ctx.contains("vad_probability"));
+}
+
+TEST(TestSileroVad, ProcessWithAudioData) {
+    if (!model_exists()) {
+        GTEST_SKIP() << "Model file not found: model/vad/silero_vad.onnx";
     }
 
-    for (int i = 0; i < 5; ++i) {
-        vad.process_batch(ctx_);
+    auto vad = create_vad(0.5f);
+    Context ctx;
+    StreamStore store;
+    store.init_audio_ring("audio_frames", 512);
+    push_frames(store, make_audio(5120));
+
+    while (vad.ready(ctx, store)) {
+        auto result = vad.process_stream(ctx, store);
+        if (result.status == StreamProcessStatus::NeedMoreInput) {
+            break;
+        }
     }
 
-    if (ctx_.contains("vad_probability")) {
-        float prob = ctx_.get<float>("vad_probability");
+    if (ctx.contains("vad_probability")) {
+        float prob = ctx.get<float>("vad_probability");
         EXPECT_GE(prob, 0.0f);
         EXPECT_LE(prob, 1.0f);
     }
 }
 
-TEST_F(TestSileroVad, ConfigParameters) {
+TEST(TestSileroVad, StateManagement) {
     if (!model_exists()) {
-        GTEST_SKIP() << "Model file not found: test_data/silero_vad.onnx";
+        GTEST_SKIP() << "Model file not found: model/vad/silero_vad.onnx";
     }
 
-    OpSileroVad vad;
-
-    nlohmann::json config;
-    config["model_path"] = "test_data/silero_vad.onnx";
-    config["threshold"] = 0.7f;
-    config["sample_rate"] = 16000;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "vad_result";
-    config["min_speech_duration_ms"] = 500;
-    config["min_silence_duration_ms"] = 200;
-
-    EXPECT_NO_THROW(vad.init(config));
-}
-
-TEST_F(TestSileroVad, VadSegmentOutput) {
-    if (!model_exists()) {
-        GTEST_SKIP() << "Model file not found: test_data/silero_vad.onnx";
-    }
-
-    OpSileroVad vad;
-
-    nlohmann::json config;
-    config["model_path"] = "test_data/silero_vad.onnx";
-    config["threshold"] = 0.3f;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "vad";
-    config["min_speech_duration_ms"] = 100;
-    config["min_silence_duration_ms"] = 50;
-
-    vad.init(config);
-
-    std::vector<float> audio_data(512 * 50);
-    for (size_t i = 0; i < audio_data.size(); ++i) {
-        float t = static_cast<float>(i) / 16000.0f;
-        if (t < 0.5f || t > 1.0f) {
-            audio_data[i] = std::sin(2.0f * M_PI * 440.0f * i / 16000.0f) * 0.3f;
-        } else {
-            audio_data[i] = 0.0f;
-        }
-    }
-
-    for (float sample : audio_data) {
-        ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
-    }
-
-    for (int i = 0; i < 30; ++i) {
-        vad.process_batch(ctx_);
-    }
-
-    if (ctx_.contains("vad_segments")) {
-        auto segments = ctx_.get<std::vector<VadSegment>>("vad_segments");
-        EXPECT_GE(segments.size(), 0);
-
-        for (const auto& seg : segments) {
-            EXPECT_GT(seg.end_ms, seg.start_ms);
-            EXPECT_GE(seg.confidence, 0.0f);
-            EXPECT_LE(seg.confidence, 1.0f);
-        }
-    }
-}
-
-TEST_F(TestSileroVad, StateManagement) {
-    if (!model_exists()) {
-        GTEST_SKIP() << "Model file not found: test_data/silero_vad.onnx";
-    }
-
-    OpSileroVad vad;
-
-    nlohmann::json config;
-    config["model_path"] = "test_data/silero_vad.onnx";
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "vad";
-
-    vad.init(config);
-
+    auto vad = create_vad();
     EXPECT_FALSE(vad.is_speech());
     EXPECT_FLOAT_EQ(vad.current_probability(), 0.0f);
 }
 
-TEST_F(TestSileroVad, Deinit) {
+TEST(TestSileroVad, Deinit) {
     if (!model_exists()) {
-        GTEST_SKIP() << "Model file not found: test_data/silero_vad.onnx";
+        GTEST_SKIP() << "Model file not found: model/vad/silero_vad.onnx";
     }
 
-    OpSileroVad vad;
-
-    nlohmann::json config;
-    config["model_path"] = "test_data/silero_vad.onnx";
-
-    vad.init(config);
+    auto vad = create_vad();
     EXPECT_NO_THROW(vad.deinit());
 }

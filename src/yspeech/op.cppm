@@ -18,11 +18,6 @@ concept OperatorConfigurable = requires(T t, const json& config) {
     { t.init(config) } -> std::same_as<void>;
 };
 
-export template <typename T>
-concept OperatorBatchProcess = requires(T t, Context& ctx) {
-    { t.process_batch(ctx) } -> std::same_as<void>;
-};
-
 export enum class StreamProcessStatus {
     NoOp,
     ConsumedInput,
@@ -63,7 +58,7 @@ concept OperatorDeinitializable = requires(T t) {
 export template <typename T>
 concept OperatorImplementation =
     OperatorConfigurable<T> &&
-    OperatorBatchProcess<T>;
+    OperatorStreamProcess<T>;
 
 export class OperatorIface {
 public:
@@ -78,12 +73,6 @@ public:
     auto init(const json& config) -> void {
         self_->init(config);
         install_capabilities_from_config(config);
-    }
-
-    auto process_batch(Context& ctx) -> void {
-        apply_capabilities(ctx, CapabilityPhase::Pre);
-        self_->process_batch(ctx);
-        apply_capabilities(ctx, CapabilityPhase::Post);
     }
 
     auto ready_stream(Context& ctx, StreamStore& store) -> bool {
@@ -102,6 +91,10 @@ public:
         auto result = self_->flush_stream(ctx, store);
         apply_capabilities(ctx, CapabilityPhase::Post);
         return result;
+    }
+
+    auto supports_flush() const -> bool {
+        return self_->supports_flush();
     }
 
     auto deinit() -> void {
@@ -160,10 +153,10 @@ public:
     struct Concept {
         virtual ~Concept() = default;
         virtual auto init(const json& config) -> void = 0;
-        virtual auto process_batch(Context& ctx) -> void = 0;
         virtual auto ready_stream(Context& ctx, StreamStore& store) -> bool = 0;
         virtual auto process_stream(Context& ctx, StreamStore& store) -> StreamProcessResult = 0;
         virtual auto flush_stream(Context& ctx, StreamStore& store) -> StreamProcessResult = 0;
+        virtual auto supports_flush() const -> bool = 0;
         virtual auto deinit() -> void = 0;
         virtual auto type() const -> const std::type_info& = 0;
     };
@@ -177,10 +170,6 @@ public:
             op_.init(config);
         }
 
-        auto process_batch(Context& ctx) -> void override {
-            op_.process_batch(ctx);
-        }
-
         auto ready_stream(Context& ctx, StreamStore& store) -> bool override {
             if constexpr (OperatorStreamReady<T>) {
                 return op_.ready(ctx, store);
@@ -190,15 +179,7 @@ public:
         }
 
         auto process_stream(Context& ctx, StreamStore& store) -> StreamProcessResult override {
-            if constexpr (OperatorStreamProcess<T>) {
-                return op_.process_stream(ctx, store);
-            } else {
-                op_.process_batch(ctx);
-                return StreamProcessResult{
-                    .status = StreamProcessStatus::ProducedOutput,
-                    .wake_downstream = true
-                };
-            }
+            return op_.process_stream(ctx, store);
         }
 
         auto flush_stream(Context& ctx, StreamStore& store) -> StreamProcessResult override {
@@ -207,6 +188,10 @@ public:
             } else {
                 return {};
             }
+        }
+
+        auto supports_flush() const -> bool override {
+            return OperatorStreamFlush<T>;
         }
 
         auto deinit() -> void override {

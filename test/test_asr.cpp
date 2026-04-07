@@ -4,9 +4,11 @@
 #include <vector>
 #include <cmath>
 
+import std;
 import yspeech.context;
 import yspeech.types;
-import yspeech.engine;
+import yspeech.stream_store;
+import yspeech.op;
 import yspeech.op.asr.base;
 import yspeech.op.asr.paraformer;
 import yspeech.op.asr.whisper;
@@ -15,17 +17,64 @@ import yspeech.op.feature.kaldi_fbank;
 
 using namespace yspeech;
 
-class TestAsrBase : public ::testing::Test {
-protected:
-    void SetUp() override {
-        ctx_.init_audio_buffer("audio_planar", 1, 16000 * 30);
+namespace {
+
+AudioFramePtr make_test_frame(const std::vector<float>& samples, std::uint64_t seq, bool eos = false) {
+    static AudioFramePool pool;
+    auto frame = pool.acquire(samples.size());
+    frame->stream_id = "test";
+    frame->seq = seq;
+    frame->sample_rate = 16000;
+    frame->channels = 1;
+    frame->pts_ms = static_cast<std::int64_t>(seq * 10);
+    frame->dur_ms = 10;
+    frame->eos = eos;
+    frame->samples = samples;
+    return frame;
+}
+
+std::vector<float> make_sine(std::size_t samples, float freq = 440.0f) {
+    std::vector<float> audio(samples);
+    for (std::size_t i = 0; i < samples; ++i) {
+        audio[i] = std::sin(2.0f * static_cast<float>(M_PI) * freq *
+                            static_cast<float>(i) / 16000.0f) * 0.5f;
     }
+    return audio;
+}
 
-    Context ctx_;
-};
+void push_audio_frames(StreamStore& store, const std::vector<float>& audio, std::string key = "audio_frames") {
+    constexpr std::size_t frame_samples = 160;
+    std::uint64_t seq = 0;
+    for (std::size_t offset = 0; offset < audio.size(); offset += frame_samples, ++seq) {
+        const auto end = std::min(offset + frame_samples, audio.size());
+        std::vector<float> frame_samples_buffer(audio.begin() + static_cast<std::ptrdiff_t>(offset),
+                                                audio.begin() + static_cast<std::ptrdiff_t>(end));
+        const bool eos = end == audio.size();
+        store.push_frame(key, make_test_frame(frame_samples_buffer, seq, eos));
+    }
+}
 
-// Test ASR Base
-TEST_F(TestAsrBase, AsrResultStructure) {
+bool paraformer_model_exists() {
+    std::ifstream model("model/asr/sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx");
+    std::ifstream tokens("model/asr/sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt");
+    return model.good() && tokens.good();
+}
+
+bool whisper_model_exists() {
+    std::ifstream encoder("test_data/whisper_encoder.onnx");
+    std::ifstream decoder("test_data/whisper_decoder.onnx");
+    return encoder.good() && decoder.good();
+}
+
+bool sensevoice_model_exists() {
+    std::ifstream model("model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx");
+    std::ifstream tokens("model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt");
+    return model.good() && tokens.good();
+}
+
+}
+
+TEST(TestAsrBase, AsrResultStructure) {
     AsrResult result;
     result.text = "Hello World";
     result.confidence = 0.95f;
@@ -38,7 +87,7 @@ TEST_F(TestAsrBase, AsrResultStructure) {
     EXPECT_EQ(result.language, "en");
 }
 
-TEST_F(TestAsrBase, WordInfoStructure) {
+TEST(TestAsrBase, WordInfoStructure) {
     WordInfo word;
     word.word = "Hello";
     word.start_time_ms = 100.0f;
@@ -49,278 +98,125 @@ TEST_F(TestAsrBase, WordInfoStructure) {
     EXPECT_FLOAT_EQ(word.start_time_ms, 100.0f);
 }
 
-// Test Feature Extraction
-class TestFeatureExtract : public ::testing::Test {
-protected:
-    void SetUp() override {
-        ctx_.init_audio_buffer("audio_planar", 1, 16000 * 30);
-    }
-
-    Context ctx_;
-};
-
-TEST_F(TestFeatureExtract, BasicInit) {
+TEST(TestFeatureExtract, BasicInit) {
     OpKaldiFbank extractor;
-
-    nlohmann::json config;
-    config["num_bins"] = 80;
-    config["sample_rate"] = 16000;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "fbank";
-
+    nlohmann::json config = {
+        {"num_bins", 80},
+        {"sample_rate", 16000},
+        {"input_frame_key", "audio_frames"},
+        {"output_key", "fbank"}
+    };
     EXPECT_NO_THROW(extractor.init(config));
 }
 
-TEST_F(TestFeatureExtract, ProcessAudio) {
+TEST(TestFeatureExtract, ProcessAudioStream) {
     OpKaldiFbank extractor;
-
-    nlohmann::json config;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "fbank";
-    config["num_bins"] = 80;
-    config["sample_rate"] = 16000;
-
+    nlohmann::json config = {
+        {"input_frame_key", "audio_frames"},
+        {"output_key", "fbank"},
+        {"num_bins", 80},
+        {"sample_rate", 16000}
+    };
     extractor.init(config);
 
-    std::vector<float> audio_data(16000);
-    for (size_t i = 0; i < audio_data.size(); ++i) {
-        audio_data[i] = std::sin(2.0f * M_PI * 440.0f * i / 16000.0f) * 0.5f;
-    }
+    Context ctx;
+    StreamStore store;
+    store.init_audio_ring("audio_frames", 2048);
+    push_audio_frames(store, make_sine(16000));
 
-    for (float sample : audio_data) {
-        ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
-    }
+    ASSERT_TRUE(extractor.ready(ctx, store));
+    auto result = extractor.process_stream(ctx, store);
+    EXPECT_NE(result.status, StreamProcessStatus::NeedMoreInput);
+    EXPECT_TRUE(ctx.contains("fbank_num_frames"));
+    EXPECT_GT(ctx.get<int>("fbank_num_frames"), 0);
 
-    extractor.process_batch(ctx_);
-
-    EXPECT_TRUE(ctx_.contains("fbank_num_frames"));
-    int num_frames = ctx_.get<int>("fbank_num_frames");
-    EXPECT_GT(num_frames, 0);
+    auto flush_result = extractor.flush(ctx, store);
+    EXPECT_TRUE(flush_result.status == StreamProcessStatus::NoOp ||
+                flush_result.status == StreamProcessStatus::StreamFinalized);
 }
 
-TEST_F(TestFeatureExtract, KaldiFbankFeatureDim) {
+TEST(TestFeatureExtract, KaldiFbankFeatureDim) {
     OpKaldiFbank extractor;
-
-    nlohmann::json config;
-    config["num_bins"] = 80;
-    config["sample_rate"] = 16000;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "fbank";
-
+    nlohmann::json config = {
+        {"num_bins", 80},
+        {"sample_rate", 16000},
+        {"input_frame_key", "audio_frames"},
+        {"output_key", "fbank"}
+    };
     extractor.init(config);
 
-    std::vector<float> audio(16000 * 2);
-    for (size_t i = 0; i < audio.size(); ++i) {
-        audio[i] = std::sin(2.0f * M_PI * 440.0f * i / 16000.0f) * 0.5f;
-    }
+    Context ctx;
+    StreamStore store;
+    store.init_audio_ring("audio_frames", 4096);
+    push_audio_frames(store, make_sine(32000));
 
-    for (float sample : audio) {
-        ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
-    }
-
-    extractor.process_batch(ctx_);
-
-    auto features = ctx_.get<std::vector<std::vector<float>>>("fbank_features");
-    EXPECT_GT(features.size(), 0);
-    EXPECT_EQ(features[0].size(), 80);
+    extractor.process_stream(ctx, store);
+    auto features = ctx.get<std::vector<std::vector<float>>>("fbank_features");
+    ASSERT_FALSE(features.empty());
+    EXPECT_EQ(features.front().size(), 80);
 }
 
-// Test ParaFormer ASR
-class TestAsrParaformer : public ::testing::Test {
-protected:
-    void SetUp() override {
-        ctx_.init_audio_buffer("audio_planar", 1, 16000 * 30);
-    }
-
-    bool model_exists() const {
-        std::ifstream model("test_data/paraformer.onnx");
-        return model.good();
-    }
-
-    Context ctx_;
-};
-
-TEST_F(TestAsrParaformer, BasicInit) {
-    if (!model_exists()) {
+TEST(TestAsrParaformer, BasicInit) {
+    if (!paraformer_model_exists()) {
         GTEST_SKIP() << "ParaFormer model files not found";
     }
 
     OpAsrParaformer asr;
-
-    nlohmann::json config;
-    config["model_path"] = "test_data/paraformer.onnx";
-    config["tokens_path"] = "test_data/paraformer_tokens.txt";
-    config["language"] = "zh";
-
+    nlohmann::json config = {
+        {"model_path", "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx"},
+        {"tokens_path", "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt"},
+        {"language", "zh"}
+    };
     EXPECT_NO_THROW(asr.init(config));
 }
 
-TEST_F(TestAsrParaformer, ConfigParameters) {
-    if (!model_exists()) {
+TEST(TestAsrParaformer, EmptyFeaturesNeedMoreInput) {
+    if (!paraformer_model_exists()) {
         GTEST_SKIP() << "ParaFormer model files not found";
     }
 
     OpAsrParaformer asr;
+    nlohmann::json config = {
+        {"model_path", "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx"},
+        {"tokens_path", "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt"},
+        {"feature_input_key", "fbank"},
+        {"output_key", "asr"}
+    };
+    asr.init(config);
 
-    nlohmann::json config;
-    config["model_path"] = "test_data/paraformer.onnx";
-    config["tokens_path"] = "test_data/paraformer_tokens.txt";
-    config["language"] = "zh";
-    config["sample_rate"] = 16000;
-    config["num_threads"] = 4;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "asr";
-
-    EXPECT_NO_THROW(asr.init(config));
+    Context ctx;
+    StreamStore store;
+    auto result = asr.process_stream(ctx, store);
+    EXPECT_EQ(result.status, StreamProcessStatus::NoOp);
+    EXPECT_FALSE(ctx.contains("asr_text"));
 }
 
-// Test Whisper ASR
-class TestAsrWhisper : public ::testing::Test {
-protected:
-    void SetUp() override {
-        ctx_.init_audio_buffer("audio_planar", 1, 16000 * 30);
-    }
-
-    bool model_exists() const {
-        std::ifstream encoder("test_data/whisper_encoder.onnx");
-        std::ifstream decoder("test_data/whisper_decoder.onnx");
-        return encoder.good() && decoder.good();
-    }
-
-    Context ctx_;
-};
-
-TEST_F(TestAsrWhisper, BasicInit) {
-    if (!model_exists()) {
+TEST(TestAsrWhisper, BasicInit) {
+    if (!whisper_model_exists()) {
         GTEST_SKIP() << "Whisper model files not found";
     }
 
     OpAsrWhisper asr;
-
-    nlohmann::json config;
-    config["encoder_path"] = "test_data/whisper_encoder.onnx";
-    config["decoder_path"] = "test_data/whisper_decoder.onnx";
-    config["tokens_path"] = "test_data/whisper_tokens.txt";
-    config["language"] = "zh";
-    config["task"] = "transcribe";
-
+    nlohmann::json config = {
+        {"encoder_path", "test_data/whisper_encoder.onnx"},
+        {"decoder_path", "test_data/whisper_decoder.onnx"},
+        {"tokens_path", "test_data/whisper_tokens.txt"},
+        {"language", "zh"},
+        {"task", "transcribe"}
+    };
     EXPECT_NO_THROW(asr.init(config));
 }
 
-TEST_F(TestAsrWhisper, ConfigParameters) {
-    if (!model_exists()) {
-        GTEST_SKIP() << "Whisper model files not found";
-    }
-
-    OpAsrWhisper asr;
-
-    nlohmann::json config;
-    config["encoder_path"] = "test_data/whisper_encoder.onnx";
-    config["decoder_path"] = "test_data/whisper_decoder.onnx";
-    config["tokens_path"] = "test_data/whisper_tokens.txt";
-    config["language"] = "en";
-    config["task"] = "transcribe";
-    config["detect_language"] = true;
-    config["sample_rate"] = 16000;
-
-    EXPECT_NO_THROW(asr.init(config));
-}
-
-// Test SenseVoice ASR
-class TestAsrSenseVoice : public ::testing::Test {
-protected:
-    void SetUp() override {
-        ctx_.init_audio_buffer("audio_planar", 1, 16000 * 30);
-    }
-
-    bool model_exists() const {
-        std::ifstream file("test_data/sensevoice.onnx");
-        std::ifstream tokens("test_data/sensevoice_tokens.txt");
-        return file.good() && tokens.good();
-    }
-
-    Context ctx_;
-};
-
-TEST_F(TestAsrSenseVoice, BasicInit) {
-    if (!model_exists()) {
+TEST(TestAsrSenseVoice, BasicInit) {
+    if (!sensevoice_model_exists()) {
         GTEST_SKIP() << "SenseVoice model files not found";
     }
 
     OpAsrSenseVoice asr;
-
-    nlohmann::json config;
-    config["model_path"] = "test_data/sensevoice.onnx";
-    config["tokens_path"] = "test_data/sensevoice_tokens.txt";
-    config["language"] = "zh";
-
+    nlohmann::json config = {
+        {"model_path", "model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx"},
+        {"tokens_path", "model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt"},
+        {"language", "zh"}
+    };
     EXPECT_NO_THROW(asr.init(config));
-}
-
-TEST_F(TestAsrSenseVoice, EmotionDetection) {
-    if (!model_exists()) {
-        GTEST_SKIP() << "SenseVoice model files not found";
-    }
-
-    OpAsrSenseVoice asr;
-
-    nlohmann::json config;
-    config["model_path"] = "test_data/sensevoice.onnx";
-    config["tokens_path"] = "test_data/sensevoice_tokens.txt";
-    config["detect_emotion"] = true;
-    config["detect_itn"] = true;
-
-    EXPECT_NO_THROW(asr.init(config));
-}
-
-// Test ASR with audio processing
-TEST_F(TestAsrParaformer, ProcessEmptyBuffer) {
-    if (!model_exists()) {
-        GTEST_SKIP() << "ParaFormer model files not found";
-    }
-
-    OpAsrParaformer asr;
-
-    nlohmann::json config;
-    config["model_path"] = "test_data/paraformer.onnx";
-    config["tokens_path"] = "test_data/paraformer_tokens.txt";
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "asr";
-
-    asr.init(config);
-
-    EXPECT_NO_THROW(asr.process_batch(ctx_));
-    EXPECT_FALSE(ctx_.contains("asr_text"));
-}
-
-TEST_F(TestAsrWhisper, ProcessAudio) {
-    if (!model_exists()) {
-        GTEST_SKIP() << "Whisper model files not found";
-    }
-
-    OpAsrWhisper asr;
-
-    nlohmann::json config;
-    config["encoder_path"] = "test_data/whisper_encoder.onnx";
-    config["decoder_path"] = "test_data/whisper_decoder.onnx";
-    config["tokens_path"] = "test_data/whisper_tokens.txt";
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "asr";
-
-    asr.init(config);
-
-    // Generate test audio
-    std::vector<float> audio_data(16000 * 5);  // 5 seconds
-    for (size_t i = 0; i < audio_data.size(); ++i) {
-        audio_data[i] = std::sin(2.0f * M_PI * 440.0f * i / 16000.0f) * 0.3f;
-    }
-
-    for (float sample : audio_data) {
-        ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
-    }
-
-    asr.process_batch(ctx_);
-
-    // Should have some output (even if placeholder)
-    EXPECT_TRUE(ctx_.contains("asr_text"));
 }

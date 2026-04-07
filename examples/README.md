@@ -138,6 +138,7 @@ int main(int argc, char* argv[]) {
         }
     });
     engine.start();
+    engine.finish();
     while (!engine.input_eof_reached()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
@@ -179,6 +180,7 @@ engine.on_event([](const yspeech::EngineEvent& event) {
 });
 
 engine.start();
+engine.finish();
 
 while (!engine.input_eof_reached()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -257,12 +259,18 @@ cmake --build build --target transcribe_tool
 ### 1. 文件转录（离线模式）
 
 ```cpp
-// 方法 1: 一行代码完成转录
-auto result = yspeech::transcribe("config.json", "audio.wav");
-
-// 方法 2: 创建处理器对象
+// 统一 Engine 接口（离线）
 yspeech::Engine engine("config.json");
-auto results = processor.process_file("audio.wav");
+auto file_source = std::make_shared<yspeech::FileSource>("audio.wav", "offline", 1.0, false);
+auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(file_source);
+engine.set_frame_source(pipeline_source);
+
+engine.start();
+engine.finish();
+while (!engine.input_eof_reached()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}
+engine.stop();
 ```
 
 ### 2. 流式识别（在线模式）
@@ -271,38 +279,27 @@ auto results = processor.process_file("audio.wav");
 yspeech::Engine engine("config.json");
 
 // 设置回调
-processor.on_result([](const yspeech::AsrResult& result) {
-    std::println("识别结果：{}", result.text);
-});
-
-processor.on_vad([](bool is_speech, int64_t start_ms, int64_t end_ms) {
-    if (is_speech) {
-        std::println("语音开始：{}ms", start_ms);
-    } else {
-        std::println("语音结束：{}ms - {}ms", start_ms, end_ms);
+engine.on_event([](const yspeech::EngineEvent& event) {
+    if (event.kind == yspeech::EngineEventKind::ResultPartial && event.asr.has_value()) {
+        std::println("识别结果：{}", event.asr->text);
     }
 });
 
 // 启动流式处理
-processor.start();
+engine.start();
 
 // 推送音频数据
 while (recording) {
     std::vector<float> audio = get_audio_chunk();
-    processor.push_audio(audio);
-    
-    // 获取识别结果
-    while (processor.has_result()) {
-        auto result = processor.get_result();
-        handle_result(result);
-    }
+    engine.push_audio(audio);
 }
 
-// 停止处理
-processor.stop();
+// 显式结束输入并收尾
+engine.finish();
+engine.stop();
 
 // 获取统计信息
-auto stats = processor.get_stats();
+auto stats = engine.get_stats();
 std::println("{}", stats.to_string());
 ```
 
@@ -312,26 +309,21 @@ std::println("{}", stats.to_string());
 yspeech::Engine engine("config.json");
 
 // 设置多个回调
-processor.on_result([](const auto& result) {
-    // 处理识别结果
+engine.on_event([](const yspeech::EngineEvent& event) {
+    if (event.kind == yspeech::EngineEventKind::ResultSegmentFinal && event.asr.has_value()) {
+        std::println("{}", event.asr->text);
+    }
 });
-
-processor.on_vad([](bool is_speech, int64_t start, int64_t end) {
-    // 处理 VAD 事件
-});
-
-processor.on_status([](const std::string& status) {
-    // 处理状态更新
-});
+engine.on_status([](const std::string& status) { std::println("{}", status); });
 
 // 状态查询
-if (processor.is_speaking()) {
-    float confidence = processor.get_confidence();
+if (engine.input_eof_reached()) {
+    float confidence = 0.0f;
     std::println("置信度：{:.2f}", confidence);
 }
 
 // 统计信息
-auto stats = processor.get_stats();
+auto stats = engine.get_stats();
 std::println("处理块数：{}", stats.audio_chunks_processed);
 std::println("RTF: {:.2f}", stats.rtf);
 ```

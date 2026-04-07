@@ -8,6 +8,21 @@ import std;
 using namespace yspeech;
 using json = nlohmann::json;
 
+namespace {
+
+struct StreamTestOp {
+    void init(const json&) {}
+    StreamProcessResult process_stream(Context& ctx, StreamStore&) {
+        ctx.set("op_processed", true);
+        return {
+            .status = StreamProcessStatus::ProducedOutput,
+            .wake_downstream = true
+        };
+    }
+};
+
+}
+
 class PreCapability {
 public:
     PreCapability(const json& config = {}) : config_(config) {}
@@ -99,12 +114,7 @@ TEST(CapabilityTest, CapabilityFactory) {
 }
 
 TEST(OperatorCapabilityTest, InstallUninstall) {
-    struct TestOp {
-        void init(const json&) {}
-        void process(Context&) {}
-    };
-    
-    OperatorIface op = OperatorIface(TestOp{});
+    OperatorIface op = OperatorIface(StreamTestOp{});
     
     EXPECT_EQ(op.capability_count(), 0);
     
@@ -127,19 +137,14 @@ TEST(OperatorCapabilityTest, InstallUninstall) {
 }
 
 TEST(OperatorCapabilityTest, PrePostPhases) {
-    struct TestOp {
-        void init(const json&) {}
-        void process(Context& ctx) {
-            ctx.set("op_processed", true);
-        }
-    };
-    
-    OperatorIface op = OperatorIface(TestOp{});
+    OperatorIface op = OperatorIface(StreamTestOp{});
     op.install(PreCapability(json{{"value", 10}}), "pre");
     op.install(PostCapability(json{{"value", 20}}), "post");
     
     Context ctx;
-    op.process_batch(ctx);
+    StreamStore store;
+    store.init_audio_ring("audio_frames", 8);
+    op.process_stream(ctx, store);
     
     EXPECT_TRUE(ctx.contains("pre_applied"));
     EXPECT_TRUE(ctx.contains("op_processed"));
@@ -150,12 +155,7 @@ TEST(OperatorCapabilityTest, PrePostPhases) {
 }
 
 TEST(OperatorCapabilityTest, ConfigInstall) {
-    struct TestOp {
-        void init(const json&) {}
-        void process(Context&) {}
-    };
-    
-    OperatorIface op = OperatorIface(TestOp{});
+    OperatorIface op = OperatorIface(StreamTestOp{});
     
     json config = {
         {"capabilities", {
@@ -169,7 +169,9 @@ TEST(OperatorCapabilityTest, ConfigInstall) {
     EXPECT_TRUE(op.has_capability("PreCapability"));
     
     Context ctx;
-    op.process_batch(ctx);
+    StreamStore store;
+    store.init_audio_ring("audio_frames", 8);
+    op.process_stream(ctx, store);
     
     EXPECT_EQ(ctx.get<int>("pre_value"), 123);
 }

@@ -50,33 +50,6 @@ public:
         log_info("OpAsrParaformer initialized: model={}, tokens={}", model_path_, tokens_path_);
     }
 
-    void process_batch(Context& ctx) override {
-        std::vector<std::vector<float>> features = ctx.get_or_default(
-            feature_input_key_ + "_features", std::vector<std::vector<float>>{});
-        
-        if (features.empty()) {
-            log_debug("No features found at {}_features", feature_input_key_);
-            return;
-        }
-
-        AsrResult result = infer(features);
-
-        ctx.set(output_key_ + "_text", result.text);
-        ctx.set(output_key_ + "_confidence", result.confidence);
-        ctx.set(output_key_ + "_language", result.language);
-
-        std::vector<AsrResult> results = ctx.get_or_default(
-            output_key_ + "_results", std::vector<AsrResult>{});
-        results.push_back(result);
-        ctx.set(output_key_ + "_results", std::move(results));
-
-        auto events = ctx.get_or_default(output_key_ + "_events", std::vector<AsrEvent>{});
-        events.push_back(AsrEvent{.kind = AsrResultKind::StreamFinal, .result = result});
-        ctx.set(output_key_ + "_events", std::move(events));
-
-        log_debug("ASR result: \"{}\" (confidence={:.2f})", result.text, result.confidence);
-    }
-
     bool ready(Context& ctx, StreamStore&) {
         const auto feature_version = ctx.get_or_default<std::uint64_t>(feature_input_key_ + "_version", 0);
         const auto features = ctx.get_or_default(feature_input_key_ + "_features", std::vector<std::vector<float>>{});
@@ -90,7 +63,7 @@ public:
         return has_partial_work || has_segment_final_work;
     }
 
-    StreamProcessResult process_stream(Context& ctx, StreamStore&) {
+    StreamProcessResult process_stream(Context& ctx, StreamStore&) override {
         std::vector<std::vector<float>> features = ctx.get_or_default(
             feature_input_key_ + "_features", std::vector<std::vector<float>>{});
         if (features.empty()) {
@@ -148,7 +121,7 @@ public:
         };
     }
 
-    StreamProcessResult flush(Context& ctx, StreamStore&) {
+    StreamProcessResult flush(Context& ctx, StreamStore&) override {
         std::vector<std::vector<float>> features = ctx.get_or_default(
             feature_input_key_ + "_features", std::vector<std::vector<float>>{});
         if (features.empty()) {

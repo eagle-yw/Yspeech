@@ -3,6 +3,7 @@
 #include <fstream>
 
 import yspeech;
+import yspeech.stream_store;
 import std;
 
 using namespace yspeech;
@@ -49,7 +50,9 @@ TEST(AspectTest, BasicFlow) {
     pipeline.add_aspect(MockAspectWrapper{mock_aspect});
     pipeline.build(config_path);
     Context ctx;
-    pipeline.run(ctx);
+    StreamStore store;
+    store.init_audio_ring("audio_frames", 8);
+    pipeline.run_stream(ctx, store, false);
 
     std::filesystem::remove(config_path);
 }
@@ -92,7 +95,9 @@ TEST(AspectTest, MultipleAspectsOrder) {
 
     pipeline.build(config_path);
     Context ctx;
-    pipeline.run(ctx);
+    StreamStore store;
+    store.init_audio_ring("audio_frames", 8);
+    pipeline.run_stream(ctx, store, false);
 
     std::vector<std::string> expected = {"A_before", "B_before", "B_after", "A_after"};
     EXPECT_EQ(order, expected);

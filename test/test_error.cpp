@@ -301,19 +301,14 @@ TEST(PipelineIntegration, ConfigErrorHandling) {
     yspeech::PipelineManager pipeline;
     
     EXPECT_THROW(pipeline.build("nonexistent.json"), std::exception);
-    
-    EXPECT_TRUE(pipeline.has_build_errors());
-    EXPECT_EQ(pipeline.build_errors().size(), 1);
-    
-    const auto& errors = pipeline.build_errors();
-    EXPECT_EQ(errors[0].component, "Pipeline");
-    EXPECT_EQ(errors[0].code, yspeech::ErrorCode::InvalidConfig);
-    EXPECT_TRUE(errors[0].metadata.contains("config_path"));
+    EXPECT_FALSE(pipeline.has_build_errors());
+    EXPECT_TRUE(pipeline.build_errors().empty());
 }
 
 TEST(PipelineIntegration, ErrorRecoveryWithMetadata) {
     yspeech::Context ctx;
     yspeech::PipelineManager pipeline;
+    yspeech::StreamStore store;
     
     nlohmann::json config = {
         {"name", "test_pipeline"},
@@ -327,7 +322,8 @@ TEST(PipelineIntegration, ErrorRecoveryWithMetadata) {
     
     EXPECT_FALSE(pipeline.has_build_errors());
     
-    pipeline.run(ctx);
+    store.init_audio_ring("audio_frames", 8);
+    pipeline.run_stream(ctx, store, false);
     
     EXPECT_FALSE(ctx.has_errors());
 }

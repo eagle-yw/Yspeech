@@ -42,74 +42,13 @@ public:
                  model_path_, task_, detect_language_);
     }
 
-    void process_batch(Context& ctx) override {
-        std::vector<float> audio_data;
-        int max_samples = sample_rate_ * 30;  // 30 seconds max
-        while (audio_data.size() < static_cast<size_t>(max_samples)) {
-            auto read_result = ctx.read_audio_frame(input_frame_key_, reader_key_);
-            if (read_result.status == FrameReadStatus::Empty) {
-                break;
-            }
-            if (read_result.status == FrameReadStatus::Overrun) {
-                log_warn("Whisper reader '{}' overrun: requested_seq={}, oldest_available_seq={}",
-                         reader_key_, read_result.requested_seq, read_result.oldest_available_seq);
-                ctx.seek_audio_frame_reader_to_oldest(input_frame_key_, reader_key_);
-                continue;
-            }
-
-            auto frame = read_result.frame;
-            if (!frame || frame->gap || frame->samples.empty()) {
-                continue;
-            }
-            const size_t remaining = static_cast<size_t>(max_samples) - audio_data.size();
-            const size_t copy_size = std::min(remaining, frame->samples.size());
-            audio_data.insert(
-                audio_data.end(),
-                frame->samples.begin(),
-                frame->samples.begin() + static_cast<std::ptrdiff_t>(copy_size)
-            );
-        }
-
-        if (audio_data.empty()) {
-            return;
-        }
-
-        // Pad or trim to exactly 30 seconds
-        audio_data = prepare_audio(audio_data);
-
-        // Extract log-mel spectrogram features
-        auto features = extract_log_mel_spectrogram(audio_data);
-
-        // Run inference
-        AsrResult result = infer(features);
-
-        // Save results
-        ctx.set(output_key_ + "_text", result.text);
-        ctx.set(output_key_ + "_confidence", result.confidence);
-        ctx.set(output_key_ + "_language", result.language);
-
-        std::vector<AsrResult> results;
-        if (ctx.contains(output_key_ + "_results")) {
-            results = ctx.get<std::vector<AsrResult>>(output_key_ + "_results");
-        }
-        results.push_back(result);
-        ctx.set(output_key_ + "_results", results);
-
-        auto events = ctx.get_or_default(output_key_ + "_events", std::vector<AsrEvent>{});
-        events.push_back(AsrEvent{.kind = AsrResultKind::StreamFinal, .result = result});
-        ctx.set(output_key_ + "_events", std::move(events));
-
-        log_info("Whisper ASR: text=\"{}\", language={}, confidence={:.2f}",
-                 result.text, result.language, result.confidence);
-    }
-
     bool ready(Context&, StreamStore& store) {
         return store.has_unread(input_frame_key_, reader_key_) ||
                collected_samples_ >= static_cast<size_t>(sample_rate_ * 30) ||
                eos_seen_;
     }
 
-    StreamProcessResult process_stream(Context& ctx, StreamStore& store) {
+    StreamProcessResult process_stream(Context& ctx, StreamStore& store) override {
         std::vector<float> audio_data;
         std::size_t consumed = 0;
         const int max_samples = sample_rate_ * 30;
@@ -187,7 +126,7 @@ public:
         };
     }
 
-    StreamProcessResult flush(Context& ctx, StreamStore& store) {
+    StreamProcessResult flush(Context& ctx, StreamStore& store) override {
         eos_seen_ = true;
         return process_stream(ctx, store);
     }

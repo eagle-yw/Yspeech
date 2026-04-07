@@ -1,5 +1,7 @@
 import std;
 import yspeech.engine;
+import yspeech.log;
+import yspeech.runtime_common;
 import yspeech.types;
 import yspeech.audio.file;
 import yspeech.frame_source;
@@ -21,7 +23,9 @@ int main(int argc, char* argv[]) {
     std::print("音频文件: {}\n\n", audio_file);
     
     try {
-        yspeech::Engine asr(config_file);
+        auto runtime_config = yspeech::load_runtime_config(config_file);
+        runtime_config["log_level"] = "warn";
+        yspeech::Engine asr(runtime_config);
         auto file_source = std::make_shared<yspeech::FileSource>(audio_file);
         auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(file_source);
         asr.set_frame_source(pipeline_source);
@@ -32,6 +36,8 @@ int main(int argc, char* argv[]) {
         std::string latest_segment_final;
         std::string final_transcript;
         std::string rendered_transcript;
+        std::string last_block_text;
+        bool inline_partial_visible = false;
 
         auto normalize_text = [](std::string text) {
             auto not_space = [](unsigned char ch) {
@@ -48,11 +54,25 @@ int main(int argc, char* argv[]) {
 
         asr.on_event([&](const yspeech::EngineEvent& event) {
             if (event.kind == yspeech::EngineEventKind::VadStart && event.vad_segment.has_value()) {
+                {
+                    std::lock_guard lock(transcript_mutex);
+                    if (inline_partial_visible) {
+                        std::print("\n");
+                        inline_partial_visible = false;
+                    }
+                }
                 std::print("[VAD] 语音开始: {}ms\n", event.vad_segment->start_ms);
                 return;
             }
 
             if (event.kind == yspeech::EngineEventKind::VadEnd && event.vad_segment.has_value()) {
+                {
+                    std::lock_guard lock(transcript_mutex);
+                    if (inline_partial_visible) {
+                        std::print("\n");
+                        inline_partial_visible = false;
+                    }
+                }
                 std::print("[VAD] 语音结束: {}ms - {}ms\n", event.vad_segment->start_ms, event.vad_segment->end_ms);
                 return;
             }
@@ -68,7 +88,7 @@ int main(int argc, char* argv[]) {
 
             if (event.kind == yspeech::EngineEventKind::ResultPartial) {
                 std::lock_guard lock(transcript_mutex);
-                if (text == latest_partial) {
+                if (text == latest_partial || text == latest_segment_final || text == final_transcript) {
                     return;
                 }
 
@@ -79,17 +99,30 @@ int main(int argc, char* argv[]) {
                     padded.append(rendered_transcript.size() - padded.size(), ' ');
                 }
                 rendered_transcript = text;
-
-                std::print("\r[实时转写 #{}] {}", result_count.load(), padded);
+                inline_partial_visible = true;
+                std::print("\r\033[2K[实时转写] {}", padded);
                 std::cout.flush();
                 return;
             }
 
             if (event.kind == yspeech::EngineEventKind::ResultSegmentFinal) {
+                bool should_print = false;
                 {
                     std::lock_guard lock(transcript_mutex);
+                    if (inline_partial_visible) {
+                        std::print("\n");
+                        inline_partial_visible = false;
+                    }
+                    should_print = text != latest_segment_final;
                     latest_segment_final = text;
+                    latest_partial.clear();
                     rendered_transcript = text;
+                    if (should_print) {
+                        last_block_text = text;
+                    }
+                }
+                if (!should_print) {
+                    return;
                 }
                 if (event.vad_segment.has_value()) {
                     std::print(
@@ -103,10 +136,23 @@ int main(int argc, char* argv[]) {
             }
 
             if (event.kind == yspeech::EngineEventKind::ResultStreamFinal) {
+                bool should_print = false;
                 {
                     std::lock_guard lock(transcript_mutex);
+                    if (inline_partial_visible) {
+                        std::print("\n");
+                        inline_partial_visible = false;
+                    }
                     final_transcript = text;
+                    latest_partial.clear();
                     rendered_transcript = text;
+                    should_print = text != latest_segment_final && text != last_block_text;
+                    if (should_print) {
+                        last_block_text = text;
+                    }
+                }
+                if (!should_print) {
+                    return;
                 }
                 if (event.vad_segment.has_value()) {
                     std::print(
@@ -121,17 +167,20 @@ int main(int argc, char* argv[]) {
             }
         });
         
-        asr.on_status([](const std::string& status) {
+        asr.on_status([&](const std::string& status) {
+            {
+                std::lock_guard lock(transcript_mutex);
+                if (inline_partial_visible) {
+                    std::print("\n");
+                    inline_partial_visible = false;
+                }
+            }
             std::print("[状态] {}\n", status);
         });
-        
-        asr.on_performance([](const yspeech::ProcessingStats& stats) {
-            std::print("\n=== 性能统计更新 ===\n");
-            std::print("{}\n", stats.to_string());
-        });
-        
+
         std::print("开始流式识别...\n");
         asr.start();
+        asr.finish();
 
         std::print("通过统一 FrameSource 编排推送 10ms AudioFrame...\n\n");
         while (!asr.input_eof_reached()) {
@@ -163,12 +212,16 @@ int main(int argc, char* argv[]) {
 
         {
             std::lock_guard lock(transcript_mutex);
+            std::string summary_text;
             if (!final_transcript.empty()) {
-                std::print("\n最终转写：{}\n", final_transcript);
+                summary_text = final_transcript;
             } else if (!latest_segment_final.empty()) {
-                std::print("\n最终转写：{}\n", latest_segment_final);
+                summary_text = latest_segment_final;
             } else if (!latest_partial.empty()) {
-                std::print("\n最终转写：{}\n", latest_partial);
+                summary_text = latest_partial;
+            }
+            if (!summary_text.empty() && summary_text != last_block_text) {
+                std::print("\n最终转写：{}\n", summary_text);
             }
         }
         

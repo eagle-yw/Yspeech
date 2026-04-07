@@ -9,6 +9,7 @@ import std;
 import yspeech.context;
 import yspeech.op;
 import yspeech.log;
+import yspeech.stream_store;
 
 namespace yspeech {
 
@@ -27,7 +28,12 @@ public:
         }
     }
 
-    void process_batch(Context& ctx) {
+    StreamProcessResult process_stream(Context&, StreamStore&) {
+        return {};
+    }
+
+    StreamProcessResult flush(Context&, StreamStore&) {
+        return {};
     }
 
     void deinit() {

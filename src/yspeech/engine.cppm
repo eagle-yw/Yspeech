@@ -23,6 +23,7 @@ public:
     Engine& operator=(Engine&&) noexcept = delete;
 
     void start();
+    void finish();
     void stop();
     bool is_running() const;
 
@@ -64,6 +65,7 @@ public:
     }
 
     void start() { runtime_.start(); }
+    void finish() { runtime_.finish(); }
     void stop() { runtime_.stop(); }
     bool is_running() const { return runtime_.is_running(); }
     void set_frame_source(std::shared_ptr<IFrameSource> source) { runtime_.set_frame_source(std::move(source)); }
@@ -243,6 +245,10 @@ Engine::~Engine() = default;
 
 void Engine::start() {
     impl_->start();
+}
+
+void Engine::finish() {
+    impl_->finish();
 }
 
 void Engine::stop() {

@@ -8,6 +8,7 @@ import std;
 import yspeech.context;
 import yspeech.op;
 import yspeech.log;
+import yspeech.stream_store;
 import yspeech.types;
 
 namespace yspeech {
@@ -50,13 +51,15 @@ public:
                  model_path_, sample_rate_, language_);
     }
 
-    virtual void process_batch(Context& ctx) = 0;
+    virtual StreamProcessResult process_stream(Context& ctx, StreamStore& store) = 0;
+
+    virtual StreamProcessResult flush(Context&, StreamStore&) {
+        return {};
+    }
 
     virtual void deinit() {
         log_info("ASR Base deinitialized");
     }
-
-    virtual bool is_streaming() const { return false; }
 
 protected:
     std::string model_path_;

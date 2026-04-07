@@ -124,7 +124,7 @@ public:
     }
     
     void run(Context& ctx) {
-        execute(ctx, nullptr, false);
+        throw std::runtime_error("Batch pipeline execution has been removed; use run_stream()");
     }
 
     void run_stream(Context& ctx, StreamStore& store, bool flush) {
@@ -242,7 +242,8 @@ private:
                         op_ref.process_stream(*ctx, *store);
                     }
                 } else {
-                    op_ref.process_batch(*ctx);
+                    throw std::runtime_error(
+                        std::format("Operator {} requires streaming execution", id));
                 }
                 call_after_methods();
                 return;
@@ -320,12 +321,8 @@ public:
             log_warn("PipelineManager has no stages to run");
             return;
         }
-        
-        if (config_.is_single_stage()) {
-            run_single_stage(ctx);
-        } else {
-            run_multi_stage(ctx);
-        }
+
+        throw std::runtime_error("Batch pipeline execution has been removed; use run_stream()");
     }
 
     void run_stream(Context& ctx, StreamStore& store, bool flush = false) {
