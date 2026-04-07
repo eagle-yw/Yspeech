@@ -10,7 +10,10 @@ import yspeech.context;
 import yspeech.error;
 import yspeech.op;
 import yspeech.log;
+import yspeech.frame_ring;
+import yspeech.stream_store;
 import yspeech.types;
+import yspeech.data_keys;
 
 namespace yspeech {
 
@@ -44,58 +47,168 @@ public:
         }
     }
 
-    void process(Context& ctx) {
+    void process_batch(Context& ctx) {
         try {
-            auto audio_buffer = ctx.get_audio_buffer(input_buffer_key_);
-            if (!audio_buffer || audio_buffer->channels.empty()) {
-                log_debug("No audio buffer available");
-                return;
-            }
-
-            size_t available = audio_buffer->channels[0]->size();
-            if (available < WINDOW_SIZE) {
-                return;
-            }
-
-            std::vector<float> audio_chunk(WINDOW_SIZE);
-            size_t popped = audio_buffer->channels[0]->pop_batch(audio_chunk.data(), WINDOW_SIZE);
-            if (popped < WINDOW_SIZE) {
-                log_warn("VAD: Expected {} samples but only got {}", WINDOW_SIZE, popped);
-                return;
-            }
-
-            float probability = infer(audio_chunk);
-
-            update_state(probability, audio_chunk.size());
-
-            ctx.set(output_key_ + "_probability", probability);
-            ctx.set(output_key_ + "_is_speech", is_speech_);
-
-            if (segment_finished_) {
-                VadSegment segment{
-                    .start_ms = static_cast<int64_t>(current_segment_start_ms_),
-                    .end_ms = static_cast<int64_t>(current_segment_end_ms_),
-                    .confidence = current_segment_confidence_
-                };
-
-                std::vector<VadSegment> segments;
-                if (ctx.contains(output_key_ + "_segments")) {
-                    segments = ctx.get<std::vector<VadSegment>>(output_key_ + "_segments");
+            bool saw_eos = false;
+            while (true) {
+                auto read_result = ctx.read_audio_frame(input_frame_key_, reader_key_);
+                if (read_result.status == FrameReadStatus::Empty) {
+                    break;
                 }
-                segments.push_back(segment);
-                ctx.set(output_key_ + "_segments", segments);
+                if (read_result.status == FrameReadStatus::Overrun) {
+                    log_warn("VAD reader '{}' overrun: requested_seq={}, oldest_available_seq={}",
+                             reader_key_, read_result.requested_seq, read_result.oldest_available_seq);
+                    ctx.seek_audio_frame_reader_to_oldest(input_frame_key_, reader_key_);
+                    continue;
+                }
 
-                log_info("VAD segment detected: [{:.0f}ms - {:.0f}ms], confidence={:.2f}",
-                         segment.start_ms, segment.end_ms, segment.confidence);
+                auto frame = read_result.frame;
+                if (!frame) {
+                    if (read_result.status == FrameReadStatus::Eof) {
+                        saw_eos = true;
+                    }
+                    continue;
+                }
 
-                reset_segment_state();
+                if (!frame->gap && !frame->samples.empty()) {
+                    pending_samples_.insert(
+                        pending_samples_.end(),
+                        frame->samples.begin(),
+                        frame->samples.end()
+                    );
+                }
+                if (frame->eos || read_result.status == FrameReadStatus::Eof) {
+                    saw_eos = true;
+                }
             }
 
-            log_debug("VAD inference: probability={:.3f}, is_speech={}", probability, is_speech_);
+            if (pending_samples_.size() < WINDOW_SIZE && !saw_eos) {
+                return;
+            }
+
+            while (pending_samples_.size() >= WINDOW_SIZE) {
+                std::vector<float> audio_chunk(
+                    pending_samples_.begin(),
+                    pending_samples_.begin() + WINDOW_SIZE
+                );
+                pending_samples_.erase(
+                    pending_samples_.begin(),
+                    pending_samples_.begin() + WINDOW_SIZE
+                );
+                process_chunk(ctx, audio_chunk);
+            }
+
+            if (saw_eos && !pending_samples_.empty()) {
+                std::vector<float> audio_chunk = pending_samples_;
+                audio_chunk.resize(WINDOW_SIZE, 0.0f);
+                pending_samples_.clear();
+                process_chunk(ctx, audio_chunk);
+            }
+
+            if (saw_eos) {
+                finalize_segment_on_eos(ctx);
+            }
         } catch (const std::exception& e) {
             log_error("VAD processing error: {}", e.what());
             ctx.record_error("OpSileroVad", e.what(), "VAD", ErrorCode::OperatorProcessFailed, ErrorLevel::Error);
         }
+    }
+
+    bool ready(Context&, StreamStore& store) {
+        return store.has_unread(input_frame_key_, reader_key_) ||
+               pending_samples_.size() >= WINDOW_SIZE ||
+               eos_seen_;
+    }
+
+    StreamProcessResult process_stream(Context& ctx, StreamStore& store) {
+        bool saw_eos = false;
+        std::size_t consumed = 0;
+
+        while (true) {
+            auto read_result = store.read_frame(input_frame_key_, reader_key_);
+            if (read_result.status == FrameReadStatus::Empty) {
+                break;
+            }
+            if (read_result.status == FrameReadStatus::Overrun) {
+                log_warn("VAD reader '{}' overrun: requested_seq={}, oldest_available_seq={}",
+                         reader_key_, read_result.requested_seq, read_result.oldest_available_seq);
+                store.seek_reader_to_oldest(input_frame_key_, reader_key_);
+                return StreamProcessResult{
+                    .status = StreamProcessStatus::OverrunRecovered,
+                    .wake_downstream = false
+                };
+            }
+
+            auto frame = read_result.frame;
+            if (frame) {
+                ++consumed;
+                if (!frame->gap && !frame->samples.empty()) {
+                    pending_samples_.insert(
+                        pending_samples_.end(),
+                        frame->samples.begin(),
+                        frame->samples.end()
+                    );
+                }
+                if (frame->eos || read_result.status == FrameReadStatus::Eof) {
+                    saw_eos = true;
+                }
+            }
+        }
+
+        bool produced = false;
+        while (pending_samples_.size() >= WINDOW_SIZE) {
+            std::vector<float> audio_chunk(
+                pending_samples_.begin(),
+                pending_samples_.begin() + WINDOW_SIZE
+            );
+            pending_samples_.erase(
+                pending_samples_.begin(),
+                pending_samples_.begin() + WINDOW_SIZE
+            );
+            process_chunk(ctx, audio_chunk);
+            produced = true;
+        }
+
+        if (saw_eos) {
+            eos_seen_ = true;
+            if (!pending_samples_.empty()) {
+                std::vector<float> audio_chunk = pending_samples_;
+                audio_chunk.resize(WINDOW_SIZE, 0.0f);
+                pending_samples_.clear();
+                process_chunk(ctx, audio_chunk);
+                produced = true;
+            }
+            finalize_segment_on_eos(ctx);
+            produced = true;
+            eos_seen_ = false;
+        }
+
+        return StreamProcessResult{
+            .status = produced ? StreamProcessStatus::ProducedOutput :
+                      consumed > 0 ? StreamProcessStatus::ConsumedInput :
+                                     StreamProcessStatus::NeedMoreInput,
+            .consumed_frames = consumed,
+            .produced_items = produced ? 1u : 0u,
+            .wake_downstream = produced
+        };
+    }
+
+    StreamProcessResult flush(Context& ctx, StreamStore&) {
+        if (!eos_seen_ && pending_samples_.empty() && !is_speech_) {
+            return {};
+        }
+        if (!pending_samples_.empty()) {
+            std::vector<float> audio_chunk = pending_samples_;
+            audio_chunk.resize(WINDOW_SIZE, 0.0f);
+            pending_samples_.clear();
+            process_chunk(ctx, audio_chunk);
+        }
+        finalize_segment_on_eos(ctx);
+        eos_seen_ = false;
+        return StreamProcessResult{
+            .status = StreamProcessStatus::StreamFinalized,
+            .wake_downstream = true
+        };
     }
 
     void deinit() {
@@ -128,12 +241,16 @@ private:
             }
         }
 
-        if (config.contains("input_buffer_key")) {
-            input_buffer_key_ = config["input_buffer_key"].get<std::string>();
+        if (config.contains("input_frame_key")) {
+            input_frame_key_ = config["input_frame_key"].get<std::string>();
         }
 
         if (config.contains("output_key")) {
             output_key_ = config["output_key"].get<std::string>();
+        }
+        reader_key_ = output_key_ + "_reader";
+        if (config.contains("reader_key")) {
+            reader_key_ = config["reader_key"].get<std::string>();
         }
 
         if (config.contains("min_speech_duration_ms")) {
@@ -405,6 +522,56 @@ private:
         return probability;
     }
 
+    void process_chunk(Context& ctx, const std::vector<float>& audio_chunk) {
+        float probability = infer(audio_chunk);
+
+        update_state(probability, audio_chunk.size());
+
+        ctx.set(output_key_ + "_probability", probability);
+        ctx.set(output_key_ + "_is_speech", is_speech_);
+        ctx.set(output_key_ + "_current_start_ms", static_cast<std::int64_t>(current_segment_start_ms_));
+        ctx.set(output_key_ + "_current_end_ms", static_cast<std::int64_t>(current_segment_end_ms_));
+
+        if (!segment_finished_) {
+            log_debug("VAD inference: probability={:.3f}, is_speech={}", probability, is_speech_);
+            return;
+        }
+        emit_finished_segment(ctx);
+    }
+
+    void finalize_segment_on_eos(Context& ctx) {
+        if (!is_speech_) {
+            return;
+        }
+
+        current_segment_end_sample_ = total_processed_samples_;
+        segment_finished_ = true;
+        is_speech_ = false;
+        speech_duration_samples_ = 0;
+        silence_duration_samples_ = 0;
+        current_segment_end_ms_ = (static_cast<float>(current_segment_end_sample_) / sample_rate_) * 1000.0f;
+        emit_finished_segment(ctx);
+    }
+
+    void emit_finished_segment(Context& ctx) {
+        VadSegment segment{
+            .start_ms = static_cast<int64_t>(current_segment_start_ms_),
+            .end_ms = static_cast<int64_t>(current_segment_end_ms_),
+            .confidence = current_segment_confidence_
+        };
+
+        std::vector<VadSegment> segments = ctx.get_or_default(
+            output_key_ + "_segments", std::vector<VadSegment>{});
+        segments.push_back(segment);
+        ctx.set(output_key_ + "_segments", std::move(segments));
+        ctx.set(output_key_ + "_last_segment", segment);
+
+        log_info("VAD segment detected: [{}ms - {}ms], confidence={:.2f}",
+                 segment.start_ms, segment.end_ms, segment.confidence);
+
+        reset_segment_state();
+    }
+
     void update_state(float probability, size_t samples_processed) {
         last_probability_ = probability;
         total_processed_samples_ += samples_processed;
@@ -452,10 +619,13 @@ private:
     std::string model_path_ = "silero_vad.onnx";
     float threshold_ = DEFAULT_THRESHOLD;
     int sample_rate_ = SAMPLE_RATE;
-    std::string input_buffer_key_ = "audio_planar";
+    std::string input_frame_key_ = "audio_frames";
+    std::string reader_key_ = "vad_reader";
     std::string output_key_ = "vad";
     int min_speech_duration_ms_ = MIN_SPEECH_DURATION_MS;
     int min_silence_duration_ms_ = MIN_SILENCE_DURATION_MS;
+    std::vector<float> pending_samples_;
+    bool eos_seen_ = false;
 
     std::unique_ptr<Ort::Env> env_;
     std::unique_ptr<Ort::Session> session_;

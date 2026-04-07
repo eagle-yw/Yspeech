@@ -2,10 +2,19 @@
   "name": "VAD Only Pipeline",
   "version": "1.0",
   "mode": "streaming",
-  "input": {
-    "type": "microphone",
+  "source": {
+    "type": "microphone"
+  },
+  "frame": {
     "sample_rate": 16000,
-    "chunk_size": 1600
+    "channels": 1,
+    "dur_ms": 10
+  },
+  "stream": {
+    "ring_capacity_frames": 6000
+  },
+  "pipeline": {
+    "push_chunk_samples": 1600
   },
   "output": {
     "type": "callback",
@@ -31,6 +40,7 @@
             "model_path": "${model_root}/silero_vad.onnx",
             "threshold": 0.5,
             "sample_rate": 16000,
+            "input_frame_key": "audio_frames",
             "min_speech_duration_ms": 250,
             "min_silence_duration_ms": 100
           },

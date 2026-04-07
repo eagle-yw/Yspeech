@@ -9,11 +9,17 @@
       "log_level": "INFO"
     }
   },
-  "input": {
+  "source": {
     "type": "file",
-    "source": "audio.wav",
+    "path": "audio.wav"
+  },
+  "frame": {
     "sample_rate": 16000,
-    "chunk_size": 1600
+    "channels": 1,
+    "dur_ms": 10
+  },
+  "pipeline": {
+    "push_chunk_samples": 1600
   },
   "output": {
     "type": "json",

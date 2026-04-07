@@ -62,22 +62,18 @@ cmake --build build
 配置文件: examples/configs/streaming_paraformer_asr.json
 音频文件: model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
 
-加载音频: 89834 样本, 1 通道, 16000Hz
 开始流式识别...
-分块推送音频: 57 块, 每块 1600 样本 (100ms)
+通过统一 FrameSource 编排推送 10ms AudioFrame...
 
-[识别结果 #1] 对我做了介绍啊
-  置信度: 0.9
-  语言: zh
+[VAD] 语音开始: 0ms
+[实时转写 #1] 对我做了介绍啊
 
 ...
 
-=== 统计信息 ===
-处理时间: 1226ms
-音频块数: 57
-结果数: 40
-音频时长: 5614.62ms
-RTF: 0.218358
+最终转写：对我做了介绍啊那么我想说的是呢大家如果对我的研究感兴趣呢嗯
+
+=== Performance Summary ===
+Chunks: 562, Segments: 1, Results: ...
 ```
 
 #### 3. 转录工具
@@ -127,11 +123,26 @@ cmake --build build --target simple_transcribe
 **代码示例:**
 ```cpp
 import std;
-import yspeech.offline_asr;
+import yspeech.engine;
+import yspeech.frame_source;
 
 int main(int argc, char* argv[]) {
-    yspeech::OfflineAsr asr(argv[1]);
-    auto result = asr.transcribe(argv[2]);
+    yspeech::Engine engine(argv[1]);
+    auto file_source = std::make_shared<yspeech::FileSource>(argv[2], "offline", 1.0, false);
+    auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(file_source);
+    engine.set_frame_source(pipeline_source);
+    yspeech::AsrResult result;
+    engine.on_event([&](const yspeech::EngineEvent& event) {
+        if (event.asr && event.kind == yspeech::EngineEventKind::ResultStreamFinal) {
+            result = *event.asr;
+        }
+    });
+    engine.start();
+    while (!engine.input_eof_reached()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    engine.stop();
     std::println("识别结果：{}", result.text);
     return 0;
 }
@@ -152,25 +163,29 @@ cmake --build build --target streaming_demo
 
 **代码示例:**
 ```cpp
-yspeech::SpeechProcessor processor("config.json");
+import std;
+import yspeech.engine;
+import yspeech.frame_source;
 
-processor.on_result([](const auto& result) {
-    std::println("识别结果：{}", result.text);
+yspeech::Engine engine("config.json");
+auto file_source = std::make_shared<yspeech::FileSource>("audio.wav");
+auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(file_source);
+engine.set_frame_source(pipeline_source);
+
+engine.on_event([](const yspeech::EngineEvent& event) {
+    if (event.asr && event.kind == yspeech::EngineEventKind::ResultPartial) {
+        std::println("实时转写：{}", event.asr->text);
+    }
 });
 
-processor.start();
+engine.start();
 
-while (true) {
-    std::vector<float> audio = get_audio_chunk();
-    processor.push_audio(audio);
-    
-    if (processor.has_result()) {
-        auto result = processor.get_result();
-        std::println("{}", result.text);
-    }
+while (!engine.input_eof_reached()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
 }
 
-processor.stop();
+std::this_thread::sleep_for(std::chrono::seconds(2));
+engine.stop();
 ```
 
 ### 3. transcribe_tool.cpp
@@ -246,14 +261,14 @@ cmake --build build --target transcribe_tool
 auto result = yspeech::transcribe("config.json", "audio.wav");
 
 // 方法 2: 创建处理器对象
-yspeech::SpeechProcessor processor("config.json");
+yspeech::Engine engine("config.json");
 auto results = processor.process_file("audio.wav");
 ```
 
 ### 2. 流式识别（在线模式）
 
 ```cpp
-yspeech::SpeechProcessor processor("config.json");
+yspeech::Engine engine("config.json");
 
 // 设置回调
 processor.on_result([](const yspeech::AsrResult& result) {
@@ -294,7 +309,7 @@ std::println("{}", stats.to_string());
 ### 3. 高级用法
 
 ```cpp
-yspeech::SpeechProcessor processor("config.json");
+yspeech::Engine engine("config.json");
 
 // 设置多个回调
 processor.on_result([](const auto& result) {

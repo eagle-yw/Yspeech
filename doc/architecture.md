@@ -4,16 +4,16 @@
 
 ```
 ┌─────────────────────────────────────────┐
-│   StreamController (流控制器)            │
-│   - 数据输入                            │
-│   - 背压控制                            │
+│   IFrameSource / FileSource / MicSource │
+│   - 10ms AudioFrame 输入                │
+│   - 可选真实速率模拟                    │
 └──────────────┬──────────────────────────┘
                │
-               ↓ push_data()
+               ↓ push_frame()
 ┌─────────────────────────────────────────┐
-│   Context (数据总线)                     │
-│   - RingBuffer (线程安全)                │
-│   - 条件变量同步                         │
+│   StreamStore + FrameRing               │
+│   - AudioFrame 多 reader 流通道         │
+│   - overrun / eos / gap 语义            │
 └──────────────┬──────────────────────────┘
                │
                ↓
@@ -33,8 +33,8 @@
 
 ## 设计原则
 
-1. **数据输入在 Pipeline 之外** - 流控制器与处理管道分离
-2. **Operator 内部无循环** - Task 保持短期、无阻塞
-3. **Context 作为数据总线** - RingBuffer + 条件变量同步
-4. **配置驱动** - JSON 配置定义 Pipeline 结构
-5. **自动优化** - 单级模式无线程开销
+1. **数据输入在 Pipeline 之外** - source 与处理管道分离
+2. **AudioFrame 是最小时间单位** - 节点之间传 `shared_ptr<const AudioFrame>`
+3. **StreamStore 负责流语义** - `FrameRing`、多 reader、overrun、gap、eos
+4. **Taskflow 负责执行后端** - 固定图、每帧全图 sweep、节点内部早退
+5. **配置驱动** - JSON 配置定义 Pipeline 结构

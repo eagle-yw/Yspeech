@@ -2,10 +2,17 @@
   "name": "Paraformer ASR",
   "version": "1.0",
   "mode": "offline",
-  "input": {
+  "source": {
     "type": "file",
-    "source": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav",
-    "sample_rate": 16000
+    "path": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav"
+  },
+  "frame": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "dur_ms": 10
+  },
+  "pipeline": {
+    "push_chunk_samples": -1
   },
   "output": {
     "type": "text",
@@ -36,7 +43,7 @@
             "dither": 0,
             "snip_edges": false,
             "window_type": "hamming",
-            "input_buffer_key": "audio_planar",
+            "input_frame_key": "audio_frames",
             "output_key": "fbank",
             "lfr_window_size": 7,
             "lfr_window_shift": 6,

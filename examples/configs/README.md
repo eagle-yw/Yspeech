@@ -19,7 +19,7 @@
 - 批量处理音频文件
 
 ```cpp
-yspeech::SpeechProcessor processor("simple_asr.json");
+yspeech::Engine engine("simple_asr.json");
 auto result = processor.process("audio.wav");
 ```
 
@@ -40,7 +40,7 @@ auto result = processor.process("audio.wav");
 - 会议实时转录
 
 ```cpp
-yspeech::SpeechProcessor processor("streaming_asr.json");
+yspeech::Engine engine("streaming_asr.json");
 processor.on_result([](const auto& result) {
     std::cout << result.text << std::endl;
 });
@@ -65,7 +65,7 @@ processor.start();
 - 多阶段处理
 
 ```cpp
-yspeech::SpeechProcessor processor("two_level_asr.json");
+yspeech::Engine engine("two_level_asr.json");
 auto results = processor.process_file("meeting.wav");
 ```
 
@@ -86,7 +86,7 @@ auto results = processor.process_file("meeting.wav");
 - 录音触发
 
 ```cpp
-yspeech::SpeechProcessor processor("vad_only.json");
+yspeech::Engine engine("vad_only.json");
 processor.on_vad([](bool is_speech, int64_t start_ms, int64_t end_ms) {
     if (is_speech) {
         std::cout << "语音开始：" << start_ms << " ms" << std::endl;
@@ -107,19 +107,45 @@ processor.on_vad([](bool is_speech, int64_t start_ms, int64_t end_ms) {
 | `name` | string | 是 | Pipeline 名称 |
 | `version` | string | 否 | 配置版本 |
 | `mode` | string | 是 | `offline` 或 `streaming` |
-| `input` | object | 是 | 输入配置 |
+| `source` | object | 否 | 输入来源配置 |
+| `frame` | object | 否 | 最小 AudioFrame 配置 |
+| `stream` | object | 否 | 连续流 ring buffer 配置 |
+| `pipeline` | object | 否 | 推送到现有 pipeline 的聚合策略 |
 | `output` | object | 是 | 输出配置 |
 | `pipelines` | array | 是 | Pipeline 阶段数组 |
 | `global` | object | 否 | 全局配置 |
 
-### input 字段
+### source 字段
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `type` | string | `file` 或 `microphone` 或 `stream` |
-| `source` | string | 文件路径（type=file 时） |
+| `path` | string | 文件路径（type=file 时） |
+| `device` | string | 采集设备名或 ID（type=microphone 时，可选） |
+
+### frame 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
 | `sample_rate` | int | 采样率 |
-| `chunk_size` | int | 每块样本数（100ms = 1600） |
+| `channels` | int | 声道数 |
+| `dur_ms` | int | 最小帧时长，当前默认 10ms |
+
+### pipeline 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `push_chunk_samples` | int | 推送到 pipeline 的聚合样本数，16kHz 下 `1600 = 100ms`，离线可用 `-1` |
+
+### stream 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `ring_capacity_frames` | int | `AudioFrame` 连续流 ring 的容量，单位是 frame 数 |
+
+当前引擎统一以 `AudioFrame` 作为音频流最小单元。像 `SileroVad`、`KaldiFbank`、`AsrWhisper` 这样的节点，建议在 operator 参数中显式配置 `input_frame_key: "audio_frames"`。
+
+如果同一段 `AudioFrame` 流需要被多个节点重复消费，比如 `VAD` 消费后 `Fbank` 还要继续读取，那么每个节点会在内部维护各自的 reader cursor，不会互相抢占数据；当 reader 落后超过 ring 容量时，会触发 overrun 恢复。
 
 ### output 字段
 

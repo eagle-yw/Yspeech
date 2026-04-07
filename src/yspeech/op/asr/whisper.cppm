@@ -9,6 +9,8 @@ import std;
 import yspeech.context;
 import yspeech.op;
 import yspeech.op.asr.base;
+import yspeech.frame_ring;
+import yspeech.stream_store;
 import yspeech.types;
 import yspeech.log;
 
@@ -40,19 +42,32 @@ public:
                  model_path_, task_, detect_language_);
     }
 
-    void process(Context& ctx) override {
-        auto audio_buffer = ctx.get_audio_buffer(input_buffer_key_);
-        if (!audio_buffer || audio_buffer->channels.empty()) {
-            log_debug("No audio buffer available");
-            return;
-        }
-
-        // Collect audio data (Whisper expects 30s chunks)
+    void process_batch(Context& ctx) override {
         std::vector<float> audio_data;
-        float sample;
         int max_samples = sample_rate_ * 30;  // 30 seconds max
-        while (audio_buffer->channels[0]->pop(sample) && audio_data.size() < max_samples) {
-            audio_data.push_back(sample);
+        while (audio_data.size() < static_cast<size_t>(max_samples)) {
+            auto read_result = ctx.read_audio_frame(input_frame_key_, reader_key_);
+            if (read_result.status == FrameReadStatus::Empty) {
+                break;
+            }
+            if (read_result.status == FrameReadStatus::Overrun) {
+                log_warn("Whisper reader '{}' overrun: requested_seq={}, oldest_available_seq={}",
+                         reader_key_, read_result.requested_seq, read_result.oldest_available_seq);
+                ctx.seek_audio_frame_reader_to_oldest(input_frame_key_, reader_key_);
+                continue;
+            }
+
+            auto frame = read_result.frame;
+            if (!frame || frame->gap || frame->samples.empty()) {
+                continue;
+            }
+            const size_t remaining = static_cast<size_t>(max_samples) - audio_data.size();
+            const size_t copy_size = std::min(remaining, frame->samples.size());
+            audio_data.insert(
+                audio_data.end(),
+                frame->samples.begin(),
+                frame->samples.begin() + static_cast<std::ptrdiff_t>(copy_size)
+            );
         }
 
         if (audio_data.empty()) {
@@ -80,8 +95,101 @@ public:
         results.push_back(result);
         ctx.set(output_key_ + "_results", results);
 
+        auto events = ctx.get_or_default(output_key_ + "_events", std::vector<AsrEvent>{});
+        events.push_back(AsrEvent{.kind = AsrResultKind::StreamFinal, .result = result});
+        ctx.set(output_key_ + "_events", std::move(events));
+
         log_info("Whisper ASR: text=\"{}\", language={}, confidence={:.2f}",
                  result.text, result.language, result.confidence);
+    }
+
+    bool ready(Context&, StreamStore& store) {
+        return store.has_unread(input_frame_key_, reader_key_) ||
+               collected_samples_ >= static_cast<size_t>(sample_rate_ * 30) ||
+               eos_seen_;
+    }
+
+    StreamProcessResult process_stream(Context& ctx, StreamStore& store) {
+        std::vector<float> audio_data;
+        std::size_t consumed = 0;
+        const int max_samples = sample_rate_ * 30;
+
+        while (collected_audio_.size() < static_cast<size_t>(max_samples)) {
+            auto read_result = store.read_frame(input_frame_key_, reader_key_);
+            if (read_result.status == FrameReadStatus::Empty) {
+                break;
+            }
+            if (read_result.status == FrameReadStatus::Overrun) {
+                store.seek_reader_to_oldest(input_frame_key_, reader_key_);
+                return {
+                    .status = StreamProcessStatus::OverrunRecovered
+                };
+            }
+
+            auto frame = read_result.frame;
+            if (!frame || frame->gap || frame->samples.empty()) {
+                if (read_result.status == FrameReadStatus::Eof) {
+                    eos_seen_ = true;
+                }
+                continue;
+            }
+
+            ++consumed;
+            collected_audio_.insert(collected_audio_.end(), frame->samples.begin(), frame->samples.end());
+            collected_samples_ = collected_audio_.size();
+            if (frame->eos || read_result.status == FrameReadStatus::Eof) {
+                eos_seen_ = true;
+                break;
+            }
+        }
+
+        if (collected_audio_.empty()) {
+            return {
+                .status = consumed > 0 ? StreamProcessStatus::ConsumedInput : StreamProcessStatus::NeedMoreInput
+            };
+        }
+
+        if (collected_audio_.size() < static_cast<size_t>(max_samples) && !eos_seen_) {
+            return {
+                .status = consumed > 0 ? StreamProcessStatus::ConsumedInput : StreamProcessStatus::NeedMoreInput
+            };
+        }
+
+        audio_data = prepare_audio(collected_audio_);
+        auto features = extract_log_mel_spectrogram(audio_data);
+        AsrResult result = infer(features);
+
+        ctx.set(output_key_ + "_text", result.text);
+        ctx.set(output_key_ + "_confidence", result.confidence);
+        ctx.set(output_key_ + "_language", result.language);
+
+        auto results = ctx.get_or_default(output_key_ + "_results", std::vector<AsrResult>{});
+        results.push_back(result);
+        ctx.set(output_key_ + "_results", std::move(results));
+
+        auto events = ctx.get_or_default(output_key_ + "_events", std::vector<AsrEvent>{});
+        events.push_back(AsrEvent{
+            .kind = eos_seen_ ? AsrResultKind::StreamFinal : AsrResultKind::Partial,
+            .result = result
+        });
+        ctx.set(output_key_ + "_events", std::move(events));
+
+        collected_audio_.clear();
+        collected_samples_ = 0;
+        const auto status = eos_seen_ ? StreamProcessStatus::StreamFinalized : StreamProcessStatus::ProducedOutput;
+        eos_seen_ = false;
+
+        return {
+            .status = status,
+            .consumed_frames = consumed,
+            .produced_items = 1,
+            .wake_downstream = true
+        };
+    }
+
+    StreamProcessResult flush(Context& ctx, StreamStore& store) {
+        eos_seen_ = true;
+        return process_stream(ctx, store);
     }
 
     void deinit() override {
@@ -237,6 +345,9 @@ private:
     Ort::MemoryInfo memory_info_{nullptr};
 
     std::unordered_map<int, std::string> id_to_token_;
+    std::vector<float> collected_audio_;
+    std::size_t collected_samples_ = 0;
+    bool eos_seen_ = false;
 };
 
 namespace {

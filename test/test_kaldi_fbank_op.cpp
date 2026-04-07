@@ -67,7 +67,7 @@ TEST_F(TestKaldiFbankOp, ExtractFeatures) {
     }
     
     // Extract features
-    fbank.process(ctx_);
+    fbank.process_batch(ctx_);
     
     // Verify output
     EXPECT_TRUE(ctx_.contains("fbank_features"));
@@ -106,7 +106,7 @@ TEST_F(TestKaldiFbankOp, DifferentConfigs) {
             ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
         }
         
-        fbank.process(ctx_);
+        fbank.process_batch(ctx_);
         
         int num_bins = ctx_.get<int>("fbank_num_bins");
         EXPECT_EQ(num_bins, 40);
@@ -148,7 +148,7 @@ TEST_F(TestKaldiFbankOp, WindowTypes) {
             ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
         }
         
-        EXPECT_NO_THROW(fbank.process(ctx_));
+        EXPECT_NO_THROW(fbank.process_batch(ctx_));
     }
 }
 
@@ -169,7 +169,7 @@ TEST_F(TestKaldiFbankOp, Preemphasis) {
         ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
     }
     
-    fbank.process(ctx_);
+    fbank.process_batch(ctx_);
     
     EXPECT_TRUE(ctx_.contains("fbank_features"));
 }
@@ -196,7 +196,7 @@ TEST_F(TestKaldiFbankOp, DCOffsetRemoval) {
         ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
     }
     
-    fbank.process(ctx_);
+    fbank.process_batch(ctx_);
     
     EXPECT_TRUE(ctx_.contains("fbank_features"));
 }
@@ -213,7 +213,7 @@ TEST_F(TestKaldiFbankOp, EmptyAudio) {
     fbank.init(config);
     
     // Process without adding audio
-    fbank.process(ctx_);
+    fbank.process_batch(ctx_);
     
     // Should not crash, but no features extracted
     EXPECT_FALSE(ctx_.contains("fbank_features"));
@@ -236,7 +236,7 @@ TEST_F(TestKaldiFbankOp, ShortAudio) {
         ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
     }
     
-    fbank.process(ctx_);
+    fbank.process_batch(ctx_);
     
     // Should not crash, but may have no features or very few
 }
@@ -259,7 +259,7 @@ TEST_F(TestKaldiFbankOp, FrequencyRange) {
         ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
     }
     
-    EXPECT_NO_THROW(fbank.process(ctx_));
+    EXPECT_NO_THROW(fbank.process_batch(ctx_));
 }
 
 // Test feature values are reasonable
@@ -278,7 +278,7 @@ TEST_F(TestKaldiFbankOp, FeatureValuesReasonable) {
         ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
     }
     
-    fbank.process(ctx_);
+    fbank.process_batch(ctx_);
     
     auto features = ctx_.get<std::vector<std::vector<float>>>("fbank_features");
     

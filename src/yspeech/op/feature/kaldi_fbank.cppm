@@ -9,6 +9,10 @@ import std;
 import yspeech.context;
 import yspeech.op;
 import yspeech.log;
+import yspeech.frame_ring;
+import yspeech.stream_store;
+import yspeech.types;
+import yspeech.data_keys;
 
 namespace yspeech {
 
@@ -59,11 +63,15 @@ public:
         opts_ = opts;
         fbank_ = std::make_unique<knf::OnlineFbank>(opts);
         
-        if (config.contains("input_buffer_key")) {
-            input_buffer_key_ = config["input_buffer_key"].get<std::string>();
+        if (config.contains("input_frame_key")) {
+            input_frame_key_ = config["input_frame_key"].get<std::string>();
         }
         if (config.contains("output_key")) {
             output_key_ = config["output_key"].get<std::string>();
+        }
+        reader_key_ = output_key_ + "_reader";
+        if (config.contains("reader_key")) {
+            reader_key_ = config["reader_key"].get<std::string>();
         }
         
         if (config.contains("cmvn_file")) {
@@ -99,24 +107,48 @@ public:
                  lfr_window_size_, lfr_window_shift_);
     }
 
-    void process(Context& ctx) {
-        auto audio_buffer = ctx.get_audio_buffer(input_buffer_key_);
-        if (!audio_buffer || audio_buffer->channels.empty()) {
-            log_debug("No audio buffer available");
-            return;
-        }
-
+    void process_batch(Context& ctx) {
         std::vector<float> audio_data;
-        float sample;
-        while (audio_buffer->channels[0]->pop(sample)) {
-            audio_data.push_back(sample);
+        bool saw_eos = false;
+        while (true) {
+            auto read_result = ctx.read_audio_frame(input_frame_key_, reader_key_);
+            if (read_result.status == FrameReadStatus::Empty) {
+                break;
+            }
+            if (read_result.status == FrameReadStatus::Overrun) {
+                log_warn("Fbank reader '{}' overrun: requested_seq={}, oldest_available_seq={}",
+                         reader_key_, read_result.requested_seq, read_result.oldest_available_seq);
+                ctx.seek_audio_frame_reader_to_oldest(input_frame_key_, reader_key_);
+                continue;
+            }
+
+            auto frame = read_result.frame;
+            if (!frame) {
+                if (read_result.status == FrameReadStatus::Eof) {
+                    saw_eos = true;
+                }
+                continue;
+            }
+            if (!frame->gap && !frame->samples.empty()) {
+                audio_data.insert(audio_data.end(), frame->samples.begin(), frame->samples.end());
+            }
+            if (frame->eos || read_result.status == FrameReadStatus::Eof) {
+                saw_eos = true;
+            }
         }
 
         if (audio_data.empty()) {
+            if (saw_eos) {
+                fbank_->InputFinished();
+            }
+            log_debug("No audio frames available for {}", reader_key_);
             return;
         }
 
         fbank_->AcceptWaveform(opts_.frame_opts.samp_freq, audio_data.data(), static_cast<int32_t>(audio_data.size()));
+        if (saw_eos) {
+            fbank_->InputFinished();
+        }
         
         int32_t num_frames = fbank_->NumFramesReady();
         int32_t frames_to_read = num_frames - frames_read_;
@@ -136,9 +168,7 @@ public:
         
         frames_read_ += frames_to_read;
         
-        if (lfr_window_size_ > 1) {
-            features = apply_lfr(features);
-        }
+        features = apply_lfr(features);
         
         if (!cmvn_means_.empty() || !cmvn_vars_.empty()) {
             apply_cmvn(features);
@@ -179,10 +209,88 @@ public:
         ctx.set(output_key_ + "_num_bins", fbank_->Dim() * lfr_window_size_);
     }
 
+    bool ready(Context&, StreamStore& store) {
+        return store.has_unread(input_frame_key_, reader_key_) ||
+               (fbank_ && fbank_->NumFramesReady() > frames_read_) ||
+               eos_seen_;
+    }
+
+    StreamProcessResult process_stream(Context& ctx, StreamStore& store) {
+        std::vector<float> audio_data;
+        bool saw_eos = false;
+        std::size_t consumed = 0;
+
+        while (true) {
+            auto read_result = store.read_frame(input_frame_key_, reader_key_);
+            if (read_result.status == FrameReadStatus::Empty) {
+                break;
+            }
+            if (read_result.status == FrameReadStatus::Overrun) {
+                log_warn("Fbank reader '{}' overrun: requested_seq={}, oldest_available_seq={}",
+                         reader_key_, read_result.requested_seq, read_result.oldest_available_seq);
+                store.seek_reader_to_oldest(input_frame_key_, reader_key_);
+                return StreamProcessResult{
+                    .status = StreamProcessStatus::OverrunRecovered,
+                    .wake_downstream = false
+                };
+            }
+
+            auto frame = read_result.frame;
+            if (!frame) {
+                if (read_result.status == FrameReadStatus::Eof) {
+                    saw_eos = true;
+                }
+                continue;
+            }
+            ++consumed;
+            if (!frame->gap && !frame->samples.empty()) {
+                audio_data.insert(audio_data.end(), frame->samples.begin(), frame->samples.end());
+            }
+            if (frame->eos || read_result.status == FrameReadStatus::Eof) {
+                saw_eos = true;
+            }
+        }
+
+        if (!audio_data.empty()) {
+            fbank_->AcceptWaveform(opts_.frame_opts.samp_freq, audio_data.data(), static_cast<int32_t>(audio_data.size()));
+        }
+        if (saw_eos) {
+            fbank_->InputFinished();
+            eos_seen_ = true;
+        }
+
+        auto produced = publish_features(ctx);
+        return StreamProcessResult{
+            .status = produced ? StreamProcessStatus::ProducedOutput :
+                      consumed > 0 ? StreamProcessStatus::ConsumedInput :
+                                     StreamProcessStatus::NeedMoreInput,
+            .consumed_frames = consumed,
+            .produced_items = produced ? 1u : 0u,
+            .wake_downstream = produced
+        };
+    }
+
+    StreamProcessResult flush(Context& ctx, StreamStore&) {
+        auto produced = publish_features(ctx);
+        if (eos_seen_) {
+            eos_seen_ = false;
+            return StreamProcessResult{
+                .status = StreamProcessStatus::StreamFinalized,
+                .produced_items = produced ? 1u : 0u,
+                .wake_downstream = produced
+            };
+        }
+        return {};
+    }
+
     void deinit() {
         accumulated_features_.clear();
+        lfr_feature_buffer_.clear();
         fbank_.reset();
         frames_read_ = 0;
+        lfr_next_start_ = 0;
+        output_version_ = 0;
+        eos_seen_ = false;
     }
 
     int feature_dim() const {
@@ -196,7 +304,8 @@ public:
 private:
     std::unique_ptr<knf::OnlineFbank> fbank_;
     knf::FbankOptions opts_;
-    std::string input_buffer_key_ = "audio_planar";
+    std::string input_frame_key_ = "audio_frames";
+    std::string reader_key_ = "fbank_reader";
     std::string output_key_ = "fbank";
     std::string cmvn_file_;
     
@@ -213,6 +322,66 @@ private:
     int min_accumulated_frames_ = 15;
     int max_accumulated_frames_ = 100;
     std::vector<std::vector<float>> accumulated_features_;
+    std::vector<std::vector<float>> lfr_feature_buffer_;
+    std::size_t lfr_next_start_ = 0;
+    std::uint64_t output_version_ = 0;
+    bool eos_seen_ = false;
+
+    bool publish_features(Context& ctx) {
+        int32_t num_frames = fbank_->NumFramesReady();
+        int32_t frames_to_read = num_frames - frames_read_;
+
+        if (frames_to_read <= 0) {
+            return false;
+        }
+
+        std::vector<std::vector<float>> features;
+        features.reserve(frames_to_read);
+
+        for (int32_t i = 0; i < frames_to_read; ++i) {
+            const float* frame_data = fbank_->GetFrame(frames_read_ + i);
+            std::vector<float> frame(frame_data, frame_data + fbank_->Dim());
+            features.push_back(std::move(frame));
+        }
+
+        frames_read_ += frames_to_read;
+        features = apply_lfr(features);
+
+        if (!cmvn_means_.empty() || !cmvn_vars_.empty()) {
+            apply_cmvn(features);
+        }
+
+        if (features.empty()) {
+            return false;
+        }
+
+        if (enable_accumulation_) {
+            accumulated_features_.insert(accumulated_features_.end(),
+                                         features.begin(), features.end());
+
+            if (accumulated_features_.size() >= static_cast<size_t>(min_accumulated_frames_)) {
+                ctx.set(output_key_ + "_features", accumulated_features_);
+                ctx.set(output_key_ + "_num_frames", static_cast<int>(accumulated_features_.size()));
+
+                if (accumulated_features_.size() > static_cast<size_t>(max_accumulated_frames_)) {
+                    accumulated_features_.erase(
+                        accumulated_features_.begin(),
+                        accumulated_features_.end() - max_accumulated_frames_);
+                }
+            } else {
+                ctx.set(output_key_ + "_features", std::vector<std::vector<float>>{});
+                ctx.set(output_key_ + "_num_frames", 0);
+                return false;
+            }
+        } else {
+            ctx.set(output_key_ + "_features", features);
+            ctx.set(output_key_ + "_num_frames", static_cast<int>(features.size()));
+        }
+
+        ctx.set(output_key_ + "_num_bins", fbank_->Dim() * lfr_window_size_);
+        ctx.set(output_key_ + "_version", static_cast<std::uint64_t>(++output_version_));
+        return true;
+    }
 
     void load_cmvn_stats() {
         if (cmvn_file_.empty()) return;
@@ -271,39 +440,49 @@ private:
     }
     
     std::vector<std::vector<float>> apply_lfr(const std::vector<std::vector<float>>& features) {
-        if (features.empty() || lfr_window_size_ <= 1) {
+        if (features.empty()) {
             return features;
         }
-        
-        int num_frames = static_cast<int>(features.size());
-        int num_bins = static_cast<int>(features[0].size());
-        int T = (num_frames - lfr_window_size_) / lfr_window_shift_ + 1;
-        
-        if (T <= 0) {
-            return {};
+
+        if (lfr_window_size_ <= 1) {
+            return features;
         }
-        
+
+        lfr_feature_buffer_.insert(
+            lfr_feature_buffer_.end(),
+            features.begin(),
+            features.end()
+        );
+
+        const int num_bins = static_cast<int>(lfr_feature_buffer_.front().size());
         std::vector<std::vector<float>> lfr_features;
-        lfr_features.reserve(T);
-        
-        for (int t = 0; t < T; ++t) {
-            int start = t * lfr_window_shift_;
+        while (lfr_next_start_ + static_cast<std::size_t>(lfr_window_size_) <= lfr_feature_buffer_.size()) {
             std::vector<float> lfr_frame;
             lfr_frame.reserve(num_bins * lfr_window_size_);
-            
+
             for (int w = 0; w < lfr_window_size_; ++w) {
-                int frame_idx = start + w;
-                if (frame_idx < num_frames) {
-                    lfr_frame.insert(lfr_frame.end(), 
-                                     features[frame_idx].begin(), 
-                                     features[frame_idx].end());
-                } else {
-                    lfr_frame.insert(lfr_frame.end(), num_bins, 0.0f);
-                }
+                const auto& source_frame = lfr_feature_buffer_[lfr_next_start_ + static_cast<std::size_t>(w)];
+                lfr_frame.insert(lfr_frame.end(), source_frame.begin(), source_frame.end());
             }
+
             lfr_features.push_back(std::move(lfr_frame));
+            lfr_next_start_ += static_cast<std::size_t>(lfr_window_shift_);
         }
-        
+
+        if (lfr_next_start_ > 0) {
+            const std::size_t keep_from =
+                lfr_next_start_ > static_cast<std::size_t>(lfr_window_shift_)
+                    ? lfr_next_start_ - static_cast<std::size_t>(lfr_window_shift_)
+                    : 0;
+            if (keep_from > 0) {
+                lfr_feature_buffer_.erase(
+                    lfr_feature_buffer_.begin(),
+                    lfr_feature_buffer_.begin() + static_cast<std::ptrdiff_t>(keep_from)
+                );
+                lfr_next_start_ -= keep_from;
+            }
+        }
+
         return lfr_features;
     }
 };

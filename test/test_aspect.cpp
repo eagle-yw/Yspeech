@@ -23,7 +23,7 @@ TEST(AspectTest, BasicFlow) {
     })";
     f.close();
 
-    Pipeline pipeline;
+    PipelineManager pipeline;
     auto mock_aspect = std::make_shared<MockAspect>();
     
     EXPECT_CALL(*mock_aspect, before(testing::_, "op1"))
@@ -62,7 +62,7 @@ TEST(AspectTest, MultipleAspectsOrder) {
     })";
     f.close();
 
-    Pipeline pipeline;
+    PipelineManager pipeline;
     std::vector<std::string> order;
 
     struct AspectA {

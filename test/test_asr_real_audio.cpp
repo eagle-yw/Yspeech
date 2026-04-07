@@ -133,7 +133,7 @@ TEST_F(TestAsrRealAudio, ParaFormerRecognizeChinese) {
     }
 
     // 执行识别
-    asr.process(ctx_);
+    asr.process_batch(ctx_);
 
     // 输出识别结果
     std::string text = ctx_.get<std::string>("asr_text");
@@ -179,7 +179,7 @@ TEST_F(TestAsrRealAudio, WhisperRecognizeEnglish) {
     }
 
     // 执行识别
-    asr.process(ctx_);
+    asr.process_batch(ctx_);
 
     // 输出识别结果
     std::string text = ctx_.get<std::string>("asr_text");
@@ -225,7 +225,7 @@ TEST_F(TestAsrRealAudio, SenseVoiceWithEmotion) {
     }
 
     // 执行识别
-    asr.process(ctx_);
+    asr.process_batch(ctx_);
 
     // 输出识别结果
     std::string text = ctx_.get<std::string>("asr_text");
@@ -282,11 +282,11 @@ TEST_F(TestAsrRealAudio, CompleteVadAsrPipeline) {
 
     // 执行 VAD
     for (int i = 0; i < 50; ++i) {
-        vad.process(ctx_);
+        vad.process_batch(ctx_);
     }
 
     // 执行 ASR
-    asr.process(ctx_);
+    asr.process_batch(ctx_);
 
     // 输出完整结果
     std::string text = ctx_.get<std::string>("asr_text");

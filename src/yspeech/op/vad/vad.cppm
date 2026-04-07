@@ -27,7 +27,7 @@ public:
         }
     }
 
-    void process(Context& ctx) {
+    void process_batch(Context& ctx) {
     }
 
     void deinit() {

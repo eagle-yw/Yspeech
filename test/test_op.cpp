@@ -7,7 +7,7 @@ import yspeech.op;
 import std;
 
 TEST(TestPipeline, TestBuildAndRun) {
-    yspeech::Pipeline pipeline;
+    yspeech::PipelineManager pipeline;
     
     std::string config_path = "temp_config.json";
     std::ofstream out(config_path);

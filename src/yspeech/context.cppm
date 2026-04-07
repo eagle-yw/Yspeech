@@ -8,7 +8,9 @@ import std;
 import yspeech.error;
 import yspeech.state;
 import yspeech.types;
+import yspeech.frame_ring;
 import yspeech.ring_buffer;
+import yspeech.data_keys;
 
 namespace yspeech {
 
@@ -83,10 +85,9 @@ private:
 
 }
 
-struct AudioBufferInternal {
-    int num_channels;
-    int sample_rate = 16000;
-    std::vector<std::shared_ptr<RingBuffer<float>>> channels;
+struct AudioFrameStreamInternal {
+    std::shared_ptr<FrameRing> ring;
+    std::unordered_map<std::string, std::shared_ptr<FrameReader>> readers;
 };
 
 export class Context {
@@ -96,6 +97,13 @@ public:
     enum class CallbackMode {
         Sync,
         Async
+    };
+    
+    enum class PatternMatch {
+        Prefix,
+        Suffix,
+        Contains,
+        Exact
     };
     
     Context() {
@@ -160,6 +168,140 @@ public:
     void clear_data() {
         std::unique_lock lock(mutex_);
         data_.clear();
+    }
+    
+    template <typename T>
+    bool validate(const std::string& key) const {
+        std::shared_lock lock(mutex_);
+        auto it = data_.find(key);
+        if (it == data_.end()) {
+            return false;
+        }
+        return it->second.type() == typeid(T);
+    }
+    
+    template <typename T, typename Validator>
+    bool validate_with(const std::string& key, Validator&& validator) const {
+        std::shared_lock lock(mutex_);
+        auto it = data_.find(key);
+        if (it == data_.end()) {
+            return false;
+        }
+        if (it->second.type() != typeid(T)) {
+            return false;
+        }
+        try {
+            const T& value = std::any_cast<const T&>(it->second);
+            return validator(value);
+        } catch (...) {
+            return false;
+        }
+    }
+    
+    template <typename T>
+    T get_or_default(const std::string& key, const T& default_value) const {
+        std::shared_lock lock(mutex_);
+        auto it = data_.find(key);
+        if (it == data_.end()) {
+            return default_value;
+        }
+        try {
+            return std::any_cast<T>(it->second);
+        } catch (const std::bad_any_cast&) {
+            return default_value;
+        }
+    }
+    
+    template <typename T>
+    bool try_get(const std::string& key, T& out_value) const {
+        std::shared_lock lock(mutex_);
+        auto it = data_.find(key);
+        if (it == data_.end()) {
+            return false;
+        }
+        try {
+            out_value = std::any_cast<T>(it->second);
+            return true;
+        } catch (const std::bad_any_cast&) {
+            return false;
+        }
+    }
+    
+    void clear_by_pattern(const std::string& pattern, PatternMatch mode = PatternMatch::Prefix) {
+        std::unique_lock lock(mutex_);
+        for (auto it = data_.begin(); it != data_.end(); ) {
+            bool match = false;
+            switch (mode) {
+                case PatternMatch::Prefix:
+                    match = it->first.starts_with(pattern);
+                    break;
+                case PatternMatch::Suffix:
+                    match = it->first.ends_with(pattern);
+                    break;
+                case PatternMatch::Contains:
+                    match = it->first.find(pattern) != std::string::npos;
+                    break;
+                case PatternMatch::Exact:
+                    match = it->first == pattern;
+                    break;
+            }
+            if (match) {
+                it = data_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    
+    void clear_accumulating_keys() {
+        std::unique_lock lock(mutex_);
+        for (auto it = data_.begin(); it != data_.end(); ) {
+            if (DataKeys::is_accumulating_key(it->first)) {
+                it = data_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    
+    std::vector<std::string> list_keys() const {
+        std::shared_lock lock(mutex_);
+        std::vector<std::string> keys;
+        keys.reserve(data_.size());
+        for (const auto& [key, _] : data_) {
+            keys.push_back(key);
+        }
+        return keys;
+    }
+    
+    std::size_t data_size() const {
+        std::shared_lock lock(mutex_);
+        return data_.size();
+    }
+    
+    template <typename T>
+    void set_typed(const TypedKey<T>& key, T&& value) {
+        std::unique_lock lock(mutex_);
+        data_[key.name()] = std::forward<T>(value);
+    }
+    
+    template <typename T>
+    T get_typed(const TypedKey<T>& key) const {
+        std::shared_lock lock(mutex_);
+        auto it = data_.find(key.name());
+        if (it == data_.end()) {
+            return key.default_value();
+        }
+        try {
+            return std::any_cast<T>(it->second);
+        } catch (const std::bad_any_cast&) {
+            return key.default_value();
+        }
+    }
+    
+    template <typename T>
+    bool validate_typed(const TypedKey<T>& key) const {
+        return validate<T>(key.name());
     }
 
     void record_error(const Error& error) {
@@ -383,109 +525,115 @@ public:
             return nullptr;
         }
     }
-    
-    void init_audio_buffer(const std::string& key, int num_channels, size_t capacity_samples) {
+
+    void init_audio_frame_queue(const std::string& key, std::size_t capacity_frames = 6000) {
         std::unique_lock lock(mutex_);
-        auto buffer = std::make_shared<AudioBufferInternal>();
-        buffer->num_channels = num_channels;
-        buffer->channels.reserve(num_channels);
-        for (int i = 0; i < num_channels; ++i) {
-            buffer->channels.push_back(std::make_shared<RingBuffer<float>>(capacity_samples));
-        }
-        data_[key] = buffer;
+        auto stream = std::make_shared<AudioFrameStreamInternal>();
+        stream->ring = std::make_shared<FrameRing>(capacity_frames);
+        data_[key] = stream;
     }
-    
-    bool audio_buffer_write_interleaved(const std::string& key,
-                                        const float* data, size_t num_frames,
-                                        int sample_rate, int64_t timestamp_ms = 0) {
-        auto buffer = get_audio_buffer(key);
-        if (!buffer || buffer->channels.empty()) return false;
-        
-        int num_channels = static_cast<int>(buffer->channels.size());
-        buffer->sample_rate = sample_rate;
-        
-        if (num_channels == 1) {
-            buffer->channels[0]->push_batch(data, num_frames);
-        } else {
-            for (size_t frame = 0; frame < num_frames; ++frame) {
-                for (int ch = 0; ch < num_channels; ++ch) {
-                    float sample = data[frame * num_channels + ch];
-                    buffer->channels[ch]->push(sample);
-                }
-            }
+
+    bool push_audio_frame(const std::string& key, AudioFramePtr frame) {
+        if (!frame) {
+            return false;
         }
-        
+
+        auto stream = get_audio_frame_stream(key);
+        if (!stream || !stream->ring) {
+            return false;
+        }
+
+        const bool pushed = stream->ring->push(std::move(frame));
+        if (!pushed) {
+            return false;
+        }
         notify_data_ready();
         return true;
     }
-    
-    bool audio_buffer_write_planar(const std::string& key,
-                                   const float* const* channel_data, size_t num_frames,
-                                   int sample_rate, int64_t timestamp_ms = 0) {
-        auto buffer = get_audio_buffer(key);
-        if (!buffer || buffer->channels.empty()) return false;
-        
-        buffer->sample_rate = sample_rate;
-        
-        for (size_t ch = 0; ch < buffer->channels.size(); ++ch) {
-            for (size_t i = 0; i < num_frames; ++i) {
-                buffer->channels[ch]->push(channel_data[ch][i]);
-            }
+
+    void register_audio_frame_reader(const std::string& key,
+                                     const std::string& reader_key,
+                                     std::uint64_t start_seq = 0) {
+        auto stream = get_audio_frame_stream(key);
+        if (!stream || !stream->ring) {
+            return;
         }
-        
-        notify_data_ready();
-        return true;
+
+        std::unique_lock lock(mutex_);
+        stream->readers[reader_key] = std::make_shared<FrameReader>(stream->ring, reader_key, start_seq);
     }
-    
-    bool audio_buffer_read(const std::string& key, AudioData& out, size_t num_samples) {
-        auto buffer = get_audio_buffer(key);
-        if (!buffer || buffer->channels.empty()) return false;
-        
-        out.sample_rate = buffer->sample_rate;
-        out.num_channels = static_cast<int>(buffer->channels.size());
-        out.channels.clear();
-        out.channels.resize(buffer->channels.size());
-        
-        for (size_t ch = 0; ch < buffer->channels.size(); ++ch) {
-            out.channels[ch].reserve(num_samples);
-            for (size_t i = 0; i < num_samples; ++i) {
-                float sample;
-                if (!buffer->channels[ch]->pop(sample)) {
-                    if (i == 0) return false;
-                    break;
-                }
-                out.channels[ch].push_back(sample);
-            }
+
+    FrameReadResult read_audio_frame(const std::string& key,
+                                     std::string_view reader_key) {
+        auto reader = get_audio_frame_reader(key, std::string(reader_key));
+        if (!reader) {
+            return {};
         }
-        
-        return !out.empty();
+
+        return reader->next();
     }
-    
-    size_t audio_buffer_available(const std::string& key) const {
-        std::shared_lock lock(mutex_);
-        auto it = data_.find(key);
-        if (it == data_.end()) return 0;
-        
-        try {
-            auto buffer = std::any_cast<std::shared_ptr<AudioBufferInternal>>(it->second);
-            if (buffer->channels.empty()) return 0;
-            return buffer->channels[0]->size();
-        } catch (...) {
+
+    void seek_audio_frame_reader_to_oldest(const std::string& key,
+                                           std::string_view reader_key) {
+        auto reader = get_audio_frame_reader(key, std::string(reader_key));
+        if (!reader) {
+            return;
+        }
+        reader->seek_to_oldest();
+    }
+
+    void reset_audio_frame_reader(const std::string& key,
+                                  std::string_view reader_key,
+                                  std::uint64_t seq = 0) {
+        auto reader = get_audio_frame_reader(key, std::string(reader_key));
+        if (!reader) {
+            return;
+        }
+        reader->reset(seq);
+    }
+
+    std::size_t audio_frame_queue_size(const std::string& key) const {
+        auto stream = get_audio_frame_stream(key);
+        if (!stream || !stream->ring) {
             return 0;
         }
+        return stream->ring->size();
     }
     
-    std::shared_ptr<AudioBufferInternal> get_audio_buffer(const std::string& key) {
+    std::shared_ptr<AudioFrameStreamInternal> get_audio_frame_stream(const std::string& key) const {
         std::shared_lock lock(mutex_);
         auto it = data_.find(key);
         if (it == data_.end()) {
             return nullptr;
         }
         try {
-            return std::any_cast<std::shared_ptr<AudioBufferInternal>>(it->second);
+            return std::any_cast<std::shared_ptr<AudioFrameStreamInternal>>(it->second);
         } catch (...) {
             return nullptr;
         }
+    }
+
+    std::shared_ptr<FrameReader> get_audio_frame_reader(const std::string& key,
+                                                        const std::string& reader_key) {
+        auto stream = get_audio_frame_stream(key);
+        if (!stream || !stream->ring) {
+            return nullptr;
+        }
+
+        {
+            std::shared_lock lock(mutex_);
+            auto it = stream->readers.find(reader_key);
+            if (it != stream->readers.end()) {
+                return it->second;
+            }
+        }
+
+        std::unique_lock lock(mutex_);
+        auto& reader = stream->readers[reader_key];
+        if (!reader) {
+            reader = std::make_shared<FrameReader>(stream->ring, reader_key, stream->ring->oldest_seq());
+        }
+        return reader;
     }
 
 private:

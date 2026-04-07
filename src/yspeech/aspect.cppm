@@ -18,8 +18,16 @@ public:
     template<Aspect T>
     AspectIface(T&& aspect): self_(std::make_unique<Model<std::remove_cvref_t<T>>>(std::forward<T>(aspect))) {}
 
-    AspectIface(const AspectIface&) = delete;
-    AspectIface& operator=(const AspectIface&) = delete;
+    AspectIface(const AspectIface& other)
+        : self_(other.self_ ? other.self_->clone() : nullptr) {}
+
+    AspectIface& operator=(const AspectIface& other) {
+        if (this != &other) {
+            self_ = other.self_ ? other.self_->clone() : nullptr;
+        }
+        return *this;
+    }
+
     AspectIface(AspectIface&&) noexcept = default;
     AspectIface& operator=(AspectIface&&) noexcept = default;
 
@@ -44,6 +52,7 @@ public:
         virtual auto before(Context& ctx, const std::string& op_name) -> std::any = 0;
         virtual auto after(Context& ctx, const std::string& op_name, std::any payload) -> void = 0;
         virtual auto type() const -> const std::type_info& = 0;
+        virtual auto clone() const -> std::unique_ptr<Concept> = 0;
     };
 
     template<Aspect T>
@@ -61,6 +70,10 @@ public:
 
         auto type() const -> const std::type_info& override {
             return typeid(T);
+        }
+
+        auto clone() const -> std::unique_ptr<Concept> override {
+            return std::make_unique<Model<T>>(aspect_);
         }
 
         T aspect_;

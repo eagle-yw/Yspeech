@@ -7,52 +7,48 @@
 ```cpp
 yspeech::PipelineManager manager;
 manager.build("config.json");
-manager.run(ctx);  // 自动检测并优化
+manager.run(ctx);
+manager.run_stream(ctx, store, false);
 ```
 
 **特性**：
 - 自动检测单/多级模式
 - 单级模式无线程开销
 - 多级模式并行执行
-- 支持异步启动/停止
+- `Taskflow` 静态图执行后端
+- 支持流式 `ready/process_stream/flush`
 
-## 2. StreamController
+## 2. StreamStore / FrameRing
 
-外部流控制器，管理数据输入：
+流式数据面，负责 `AudioFrame` 通道：
 
 ```cpp
-yspeech::AudioStreamController controller;
-controller.set_data_source(data_source);
-controller.set_buffer_key("audio_buffer");
-controller.start(ctx);
+yspeech::StreamStore store;
+store.init_audio_ring("audio_frames", 6000);
+store.push_frame("audio_frames", frame);
+auto read = store.read_frame("audio_frames", "vad_reader");
 ```
 
 **特性**：
-- 背压控制（RingBuffer 满时等待）
-- 自动 EOF 标记
-- 统计信息（chunks_pushed, eof_reached）
+- 多 reader 重复消费
+- overrun 检测与恢复
+- `eos/gap` 语义
+- 固定容量 ring 存储
 
 ## 3. Context
 
-数据总线和同步原语：
+运行时上下文和结果总线：
 
 ```cpp
 yspeech::Context ctx;
-
-// RingBuffer 操作
-ctx.init_ring_buffer<float>("key", capacity);
-ctx.ring_buffer_push("key", data);
-ctx.ring_buffer_pop_wait("key", data, 100ms);
-
-// 同步原语
-ctx.notify_data_ready();
-ctx.wait_for_data(timeout);
+ctx.set("asr_text", text);
+ctx.set("vad_segments", segments);
+auto results = ctx.get<std::vector<yspeech::AsrEvent>>("asr_events");
 ```
 
 **特性**：
-- 线程安全的数据容器
-- RingBuffer 集成
-- 条件变量同步
+- 通用 KV 数据容器
+- 结果事件存储
 - 错误记录和统计
 
 ## 4. Operator 系统
@@ -67,12 +63,21 @@ struct MyOperator {
     }
     
     void process(Context& ctx) {
-        // 处理数据
+        // 离线处理
+    }
+
+    bool ready(Context& ctx, StreamStore& store) {
+        return true;
+    }
+
+    StreamProcessResult process_stream(Context& ctx, StreamStore& store) {
+        return {};
+    }
+
+    StreamProcessResult flush(Context& ctx, StreamStore& store) {
+        return {};
     }
 };
-
-// 注册 Operator
-YSPEECH_REGISTER_OPERATOR(MyOperator, "MyOp");
 ```
 
 **特性**：
@@ -80,6 +85,7 @@ YSPEECH_REGISTER_OPERATOR(MyOperator, "MyOp");
 - 类型擦除封装
 - 自动注册
 - Capability 支持
+- 同时支持离线和流式节点契约
 
 ## 5. Capability 系统
 

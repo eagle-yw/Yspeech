@@ -34,6 +34,91 @@ export struct AudioData {
     std::size_t total_samples() const { return num_samples() * static_cast<std::size_t>(num_channels); }
 };
 
+export struct AudioFrame {
+    std::string stream_id;
+    std::uint64_t seq = 0;
+
+    int sample_rate = 16000;
+    int channels = 1;
+
+    std::int64_t pts_ms = 0;
+    std::int64_t dur_ms = 10;
+
+    bool eos = false;
+    bool gap = false;
+
+    std::vector<float> samples;
+
+    bool empty() const {
+        return samples.empty();
+    }
+
+    std::size_t samples_per_channel() const {
+        auto ch = std::max(channels, 1);
+        return samples.size() / static_cast<std::size_t>(ch);
+    }
+};
+
+export using AudioFramePtr = std::shared_ptr<const AudioFrame>;
+
+export class AudioFramePool {
+public:
+    AudioFramePool()
+        : impl_(std::make_shared<Impl>()) {
+    }
+
+    std::shared_ptr<AudioFrame> acquire(std::size_t sample_capacity = 0) const {
+        std::unique_ptr<AudioFrame> frame;
+        {
+            std::lock_guard lock(impl_->mutex);
+            if (!impl_->pool.empty()) {
+                frame = std::move(impl_->pool.back());
+                impl_->pool.pop_back();
+            }
+        }
+
+        if (!frame) {
+            frame = std::make_unique<AudioFrame>();
+        }
+
+        reset_frame(*frame, sample_capacity);
+
+        auto* raw = frame.release();
+        return std::shared_ptr<AudioFrame>(raw, [impl = impl_](AudioFrame* ptr) {
+            if (!ptr) {
+                return;
+            }
+
+            reset_frame(*ptr, 0);
+            std::lock_guard lock(impl->mutex);
+            impl->pool.emplace_back(ptr);
+        });
+    }
+
+private:
+    struct Impl {
+        std::mutex mutex;
+        std::vector<std::unique_ptr<AudioFrame>> pool;
+    };
+
+    static void reset_frame(AudioFrame& frame, std::size_t sample_capacity) {
+        frame.stream_id.clear();
+        frame.seq = 0;
+        frame.sample_rate = 16000;
+        frame.channels = 1;
+        frame.pts_ms = 0;
+        frame.dur_ms = 10;
+        frame.eos = false;
+        frame.gap = false;
+        frame.samples.clear();
+        if (sample_capacity > frame.samples.capacity()) {
+            frame.samples.reserve(sample_capacity);
+        }
+    }
+
+    std::shared_ptr<Impl> impl_;
+};
+
 export struct AudioBufferConfig {
     int num_channels = 1;
     std::size_t capacity_samples = static_cast<std::size_t>(16000) * 60;
@@ -60,6 +145,40 @@ export struct VadSegment {
     std::int64_t start_ms = 0;
     std::int64_t end_ms = 0;
     float confidence = 0.0f;
+};
+
+export enum class AsrResultKind {
+    Partial,
+    SegmentFinal,
+    StreamFinal
+};
+
+export struct AsrEvent {
+    AsrResultKind kind = AsrResultKind::Partial;
+    AsrResult result;
+    std::optional<VadSegment> segment;
+};
+
+export enum class EngineEventKind {
+    ResultPartial,
+    ResultSegmentFinal,
+    ResultStreamFinal,
+    VadStart,
+    VadEnd,
+    Status,
+    Alert
+};
+
+export struct EngineEvent {
+    EngineEventKind kind = EngineEventKind::Status;
+    std::string task = "unknown";
+    std::string source_id;
+    std::int64_t pts_ms = 0;
+    std::optional<AsrResult> asr;
+    std::optional<VadSegment> vad_segment;
+    std::string status;
+    std::string alert_id;
+    std::string alert_message;
 };
 
 export struct OperatorTiming {
@@ -165,6 +284,8 @@ export struct ProcessingStats {
 };
 
 export using ResultCallback = std::function<void(const AsrResult&)>;
+export using ResultEventCallback = std::function<void(const AsrEvent&)>;
+export using EngineEventCallback = std::function<void(const EngineEvent&)>;
 export using VadCallback = std::function<void(bool is_speech, std::int64_t start_ms, std::int64_t end_ms)>;
 export using StatusCallback = std::function<void(const std::string& status)>;
 export using PerformanceCallback = std::function<void(const ProcessingStats&)>;

@@ -13,18 +13,33 @@ import yspeech.aspect;
 import yspeech.aspect.timer;
 import yspeech.op;
 import yspeech.log;
-import yspeech.pipeline;
 import yspeech.pipeline_config;
-import yspeech.ring_buffer;
+import yspeech.stream_store;
 
 namespace yspeech {
+
+export enum class ErrorStrategy {
+    Fail,
+    Skip,
+    Retry
+};
+
+export struct ErrorHandlingConfig {
+    ErrorStrategy strategy = ErrorStrategy::Fail;
+    int max_retries = 3;
+    int retry_delay_ms = 100;
+};
 
 namespace detail {
 
 class PipelineStage {
 public:
-    PipelineStage(const PipelineStageConfig& config, const PipelineConfig& parent_config)
-        : config_(config), parent_config_(parent_config) {}
+    PipelineStage(const PipelineStageConfig& config,
+                  const PipelineConfig& parent_config,
+                  std::vector<AspectIface> shared_aspects = {})
+        : config_(config),
+          parent_config_(parent_config),
+          shared_aspects_(std::move(shared_aspects)) {}
     
     void build() {
         init_aspects();
@@ -109,13 +124,11 @@ public:
     }
     
     void run(Context& ctx) {
-        for (const auto& err : build_errors_) {
-            ctx.record_error(err);
-        }
-        
-        ctx_.store(&ctx, std::memory_order_release);
-        executor_.run(taskflow_).wait();
-        ctx_.store(nullptr, std::memory_order_release);
+        execute(ctx, nullptr, false);
+    }
+
+    void run_stream(Context& ctx, StreamStore& store, bool flush) {
+        execute(ctx, &store, flush);
     }
     
     void clear() {
@@ -134,6 +147,7 @@ public:
     const StageOutputConfig& output() const { return config_.output(); }
     size_t max_concurrency() const { return config_.max_concurrency(); }
     const std::vector<Error>& build_errors() const { return build_errors_; }
+    void dump_graph(std::ostream& os) const { taskflow_.dump(os); }
 
 private:
     PipelineStageConfig config_;
@@ -142,12 +156,32 @@ private:
     tf::Taskflow taskflow_;
     tf::Executor executor_;
     std::atomic<Context*> ctx_{nullptr};
+    std::atomic<StreamStore*> stream_store_{nullptr};
+    std::atomic<bool> flush_mode_{false};
     std::unordered_map<std::string, ErrorHandlingConfig> error_handling_configs_;
     std::vector<Error> build_errors_;
     std::vector<AspectIface> aspects_;
+    std::vector<AspectIface> shared_aspects_;
+
+    void execute(Context& ctx, StreamStore* store, bool flush) {
+        for (const auto& err : build_errors_) {
+            ctx.record_error(err);
+        }
+
+        ctx_.store(&ctx, std::memory_order_release);
+        stream_store_.store(store, std::memory_order_release);
+        flush_mode_.store(flush, std::memory_order_release);
+        executor_.run(taskflow_).wait();
+        flush_mode_.store(false, std::memory_order_release);
+        stream_store_.store(nullptr, std::memory_order_release);
+        ctx_.store(nullptr, std::memory_order_release);
+    }
 
     void init_aspects() {
         aspects_.emplace_back(TimerAspect{});
+        for (const auto& aspect : shared_aspects_) {
+            aspects_.push_back(aspect);
+        }
     }
 
     void install_global_capabilities(OperatorIface& op) {
@@ -175,6 +209,8 @@ private:
     void run_task(const std::string& id) {
         Context* ctx = ctx_.load(std::memory_order_acquire);
         if (!ctx) return;
+        StreamStore* store = stream_store_.load(std::memory_order_acquire);
+        const bool flush = flush_mode_.load(std::memory_order_acquire);
         
         auto it = operators_.find(id);
         if (it == operators_.end()) return;
@@ -199,7 +235,15 @@ private:
         
         while (attempt <= max_attempts) {
             try {
-                op_ref.process(*ctx);
+                if (store) {
+                    if (flush) {
+                        op_ref.flush_stream(*ctx, *store);
+                    } else if (op_ref.ready_stream(*ctx, *store)) {
+                        op_ref.process_stream(*ctx, *store);
+                    }
+                } else {
+                    op_ref.process_batch(*ctx);
+                }
                 call_after_methods();
                 return;
             } catch (const std::exception& e) {
@@ -246,16 +290,22 @@ public:
     PipelineManager(PipelineManager&&) noexcept = delete;
     PipelineManager& operator=(PipelineManager&&) noexcept = delete;
 
+    template<Aspect T>
+    void add_aspect(T&& aspect) {
+        aspects_.emplace_back(std::forward<T>(aspect));
+    }
+
     void build(const std::string& config_path) {
         auto config = PipelineConfig::from_file(config_path);
         build(config);
     }
 
     void build(const PipelineConfig& config) {
+        clear();
         config_ = config;
         
         for (size_t i = 0; i < config.stage_count(); ++i) {
-            auto stage = std::make_unique<detail::PipelineStage>(config.stage(i), config);
+            auto stage = std::make_unique<detail::PipelineStage>(config.stage(i), config, aspects_);
             stage->build();
             stages_.push_back(std::move(stage));
         }
@@ -275,6 +325,19 @@ public:
             run_single_stage(ctx);
         } else {
             run_multi_stage(ctx);
+        }
+    }
+
+    void run_stream(Context& ctx, StreamStore& store, bool flush = false) {
+        if (stages_.empty()) {
+            log_warn("PipelineManager has no stages to run");
+            return;
+        }
+
+        if (config_.is_single_stage()) {
+            run_stream_single_stage(ctx, store, flush);
+        } else {
+            run_stream_multi_stage(ctx, store, flush);
         }
     }
     
@@ -314,9 +377,34 @@ public:
         return index < stages_.size() ? stages_[index].get() : nullptr;
     }
 
+    std::vector<Error> build_errors() const {
+        std::vector<Error> errors;
+        for (const auto& stage : stages_) {
+            const auto& stage_errors = stage->build_errors();
+            errors.insert(errors.end(), stage_errors.begin(), stage_errors.end());
+        }
+        return errors;
+    }
+
+    bool has_build_errors() const {
+        return std::ranges::any_of(stages_, [](const auto& stage) {
+            return !stage->build_errors().empty();
+        });
+    }
+
+    void dump_graph(std::ostream& os) const {
+        for (std::size_t i = 0; i < stages_.size(); ++i) {
+            if (i > 0) {
+                os << "\n";
+            }
+            stages_[i]->dump_graph(os);
+        }
+    }
+
 private:
     PipelineConfig config_;
     std::vector<std::unique_ptr<detail::PipelineStage>> stages_;
+    std::vector<AspectIface> aspects_;
     std::atomic<bool> running_{false};
     std::thread runner_thread_;
     Context* ctx_ = nullptr;
@@ -324,32 +412,53 @@ private:
     void init_buffers() {
     }
 
-    void run_single_stage(Context& ctx) {
+    template <typename Runner>
+    void run_stage_threads(Context& ctx, Runner&& runner) {
         ctx_ = &ctx;
-        stages_[0]->run(ctx);
-        ctx_ = nullptr;
-    }
-    
-    void run_multi_stage(Context& ctx) {
-        ctx_ = &ctx;
-        
+
         std::vector<std::thread> stage_threads;
         stage_threads.reserve(stages_.size());
-        
+
         for (size_t i = 0; i < stages_.size(); ++i) {
-            stage_threads.emplace_back([this, i, &ctx]() {
-                stages_[i]->run(ctx);
+            stage_threads.emplace_back([this, i, &ctx, &runner]() {
+                runner(*stages_[i], ctx);
             });
         }
-        
+
         for (auto& t : stage_threads) {
             if (t.joinable()) {
                 t.join();
             }
         }
-        
+
         ctx_ = nullptr;
     }
+
+    void run_single_stage(Context& ctx) {
+        ctx_ = &ctx;
+        stages_[0]->run(ctx);
+        ctx_ = nullptr;
+    }
+
+    void run_stream_single_stage(Context& ctx, StreamStore& store, bool flush) {
+        ctx_ = &ctx;
+        stages_[0]->run_stream(ctx, store, flush);
+        ctx_ = nullptr;
+    }
+
+    void run_multi_stage(Context& ctx) {
+        run_stage_threads(ctx, [](detail::PipelineStage& stage, Context& stage_ctx) {
+            stage.run(stage_ctx);
+        });
+    }
+
+    void run_stream_multi_stage(Context& ctx, StreamStore& store, bool flush) {
+        run_stage_threads(ctx, [&store, flush](detail::PipelineStage& stage, Context& stage_ctx) {
+            stage.run_stream(stage_ctx, store, flush);
+        });
+    }
 };
+
+export using Pipeline [[deprecated("Use PipelineManager instead")]] = PipelineManager;
 
 }

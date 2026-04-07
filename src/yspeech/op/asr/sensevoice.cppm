@@ -9,6 +9,7 @@ import std;
 import yspeech.context;
 import yspeech.op;
 import yspeech.op.asr.base;
+import yspeech.stream_store;
 import yspeech.types;
 import yspeech.log;
 
@@ -39,6 +40,12 @@ public:
             std::string lang = config["language"].get<std::string>();
             language_id_ = get_language_id(lang);
         }
+        if (config.contains("min_new_feature_frames")) {
+            min_new_feature_frames_ = config["min_new_feature_frames"].get<int>();
+        }
+        if (config.contains("vad_input_key")) {
+            vad_input_key_ = config["vad_input_key"].get<std::string>();
+        }
 
         init_onnx_session();
         load_tokens();
@@ -47,7 +54,7 @@ public:
                  model_path_, detect_emotion_, use_itn_, language_);
     }
 
-    void process(Context& ctx) override {
+    void process_batch(Context& ctx) override {
         std::vector<std::vector<float>> features;
 
         if (ctx.contains(feature_input_key_ + "_features")) {
@@ -79,8 +86,136 @@ public:
         results.push_back(result);
         ctx.set(output_key_ + "_results", results);
 
+        auto events = ctx.get_or_default(output_key_ + "_events", std::vector<AsrEvent>{});
+        events.push_back(AsrEvent{.kind = AsrResultKind::StreamFinal, .result = result});
+        ctx.set(output_key_ + "_events", std::move(events));
+
         log_info("SenseVoice ASR: text=\"{}\", language={}, emotion={}, confidence={:.2f}",
                  result.text, result.language, result.emotion, result.confidence);
+    }
+
+    bool ready(Context& ctx, StreamStore&) {
+        const auto feature_version = ctx.get_or_default<std::uint64_t>(feature_input_key_ + "_version", 0);
+        const auto segment_count = ctx.get_or_default(vad_input_key_ + "_segments", std::vector<VadSegment>{}).size();
+        const auto features = ctx.get_or_default(feature_input_key_ + "_features", std::vector<std::vector<float>>{});
+        const int current_frames = static_cast<int>(features.size());
+        const bool has_partial_work =
+            feature_version > last_feature_version_ &&
+            ((current_frames - last_feature_count_) >= min_new_feature_frames_ || last_feature_version_ == 0);
+        const bool has_segment_final_work =
+            segment_count > finalized_segment_count_ && feature_version > 0;
+        return has_partial_work || has_segment_final_work;
+    }
+
+    StreamProcessResult process_stream(Context& ctx, StreamStore&) {
+        std::vector<std::vector<float>> features = ctx.get_or_default(
+            feature_input_key_ + "_features", std::vector<std::vector<float>>{});
+        if (features.empty()) {
+            return {};
+        }
+
+        const auto feature_version = ctx.get_or_default<std::uint64_t>(feature_input_key_ + "_version", 0);
+        const auto segments = ctx.get_or_default(vad_input_key_ + "_segments", std::vector<VadSegment>{});
+        const auto segment_count = segments.size();
+        const bool should_emit_segment_final =
+            segment_count > finalized_segment_count_ && feature_version > finalized_segment_feature_version_;
+        if (feature_version <= last_feature_version_ && !should_emit_segment_final) {
+            return {};
+        }
+
+        AsrResult result = infer(features);
+        if (result.text.empty()) {
+            return {
+                .status = StreamProcessStatus::NeedMoreInput
+            };
+        }
+
+        ctx.set(output_key_ + "_text", result.text);
+        ctx.set(output_key_ + "_confidence", result.confidence);
+        ctx.set(output_key_ + "_language", result.language);
+        if (detect_emotion_ && !result.emotion.empty()) {
+            ctx.set(output_key_ + "_emotion", result.emotion);
+        }
+
+        std::vector<AsrResult> results = ctx.get_or_default(
+            output_key_ + "_results", std::vector<AsrResult>{});
+        results.push_back(result);
+        ctx.set(output_key_ + "_results", std::move(results));
+
+        auto events = ctx.get_or_default(output_key_ + "_events", std::vector<AsrEvent>{});
+        events.push_back(AsrEvent{
+            .kind = should_emit_segment_final ? AsrResultKind::SegmentFinal : AsrResultKind::Partial,
+            .result = result,
+            .segment = should_emit_segment_final && !segments.empty()
+                ? std::optional<VadSegment>(segments.back())
+                : std::nullopt
+        });
+        ctx.set(output_key_ + "_events", std::move(events));
+
+        last_feature_version_ = feature_version;
+        last_feature_count_ = static_cast<int>(features.size());
+        if (should_emit_segment_final) {
+            finalized_segment_count_ = segment_count;
+            finalized_segment_feature_version_ = feature_version;
+        }
+        finalized_stream_feature_version_ = 0;
+
+        return StreamProcessResult{
+            .status = should_emit_segment_final ? StreamProcessStatus::SegmentFinalized
+                                                : StreamProcessStatus::ProducedOutput,
+            .produced_items = 1,
+            .wake_downstream = true
+        };
+    }
+
+    StreamProcessResult flush(Context& ctx, StreamStore&) {
+        std::vector<std::vector<float>> features = ctx.get_or_default(
+            feature_input_key_ + "_features", std::vector<std::vector<float>>{});
+        if (features.empty()) {
+            return {};
+        }
+
+        const auto feature_version = ctx.get_or_default<std::uint64_t>(feature_input_key_ + "_version", 0);
+        if (feature_version == finalized_stream_feature_version_) {
+            return {};
+        }
+
+        AsrResult result = infer(features);
+        if (result.text.empty()) {
+            return {};
+        }
+
+        ctx.set(output_key_ + "_text", result.text);
+        ctx.set(output_key_ + "_confidence", result.confidence);
+        ctx.set(output_key_ + "_language", result.language);
+        if (detect_emotion_ && !result.emotion.empty()) {
+            ctx.set(output_key_ + "_emotion", result.emotion);
+        }
+
+        std::vector<AsrResult> results = ctx.get_or_default(
+            output_key_ + "_results", std::vector<AsrResult>{});
+        results.push_back(result);
+        ctx.set(output_key_ + "_results", std::move(results));
+
+        auto events = ctx.get_or_default(output_key_ + "_events", std::vector<AsrEvent>{});
+        events.push_back(AsrEvent{
+            .kind = AsrResultKind::StreamFinal,
+            .result = result,
+            .segment = ctx.contains(vad_input_key_ + "_last_segment")
+                ? std::optional<VadSegment>(ctx.get<VadSegment>(vad_input_key_ + "_last_segment"))
+                : std::nullopt
+        });
+        ctx.set(output_key_ + "_events", std::move(events));
+
+        last_feature_version_ = feature_version;
+        last_feature_count_ = static_cast<int>(features.size());
+        finalized_stream_feature_version_ = feature_version;
+
+        return StreamProcessResult{
+            .status = StreamProcessStatus::StreamFinalized,
+            .produced_items = 1,
+            .wake_downstream = true
+        };
     }
 
     void deinit() override {
@@ -331,9 +466,16 @@ private:
     }
 
     std::string feature_input_key_ = "fbank";
+    std::string vad_input_key_ = "vad";
     bool detect_emotion_ = false;
     bool use_itn_ = true;
     int language_id_ = 0;
+    int min_new_feature_frames_ = 8;
+    std::uint64_t last_feature_version_ = 0;
+    int last_feature_count_ = 0;
+    std::size_t finalized_segment_count_ = 0;
+    std::uint64_t finalized_segment_feature_version_ = 0;
+    std::uint64_t finalized_stream_feature_version_ = 0;
 
     std::unique_ptr<Ort::Env> env_;
     std::unique_ptr<Ort::Session> session_;

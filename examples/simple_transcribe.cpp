@@ -1,6 +1,7 @@
 import std;
 import yspeech.types;
-import yspeech.offline_asr;
+import yspeech.engine;
+import yspeech.frame_source;
 
 int main(int argc, char* argv[]) {
     std::println("=== Yspeech 离线 ASR 示例 ===\n");
@@ -16,9 +17,29 @@ int main(int argc, char* argv[]) {
     
     try {
         auto start = std::chrono::steady_clock::now();
-        
-        yspeech::OfflineAsr asr(config_file);
-        auto result = asr.transcribe(audio_file);
+        yspeech::Engine engine(config_file);
+        auto file_source = std::make_shared<yspeech::FileSource>(audio_file, "offline", 1.0, false);
+        auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(file_source);
+        engine.set_frame_source(pipeline_source);
+
+        yspeech::AsrResult result;
+        engine.on_event([&](const yspeech::EngineEvent& event) {
+            if (!event.asr.has_value()) {
+                return;
+            }
+            if (event.kind != yspeech::EngineEventKind::ResultSegmentFinal &&
+                event.kind != yspeech::EngineEventKind::ResultStreamFinal) {
+                return;
+            }
+            result = *event.asr;
+        });
+
+        engine.start();
+        while (!engine.input_eof_reached()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        engine.stop();
         
         auto end = std::chrono::steady_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);

@@ -3,10 +3,19 @@
   "version": "1.0",
   "log_level": "info",
   "mode": "streaming",
-  "input": {
-    "type": "microphone",
+  "source": {
+    "type": "microphone"
+  },
+  "frame": {
     "sample_rate": 16000,
-    "chunk_size": 1600
+    "channels": 1,
+    "dur_ms": 10
+  },
+  "stream": {
+    "ring_capacity_frames": 6000
+  },
+  "pipeline": {
+    "push_chunk_samples": 1600
   },
   "output": {
     "type": "callback",
@@ -33,6 +42,7 @@
             "model_path": "model/vad/silero_vad.onnx",
             "threshold": 0.5,
             "sample_rate": 16000,
+            "input_frame_key": "audio_frames",
             "min_speech_duration_ms": 250,
             "min_silence_duration_ms": 100
           }
@@ -60,7 +70,7 @@
             "frame_shift_ms": 10,
             "dither": 0,
             "snip_edges": false,
-            "input_buffer_key": "audio_planar",
+            "input_frame_key": "audio_frames",
             "output_key": "fbank",
             "lfr_window_size": 7,
             "lfr_window_shift": 7,

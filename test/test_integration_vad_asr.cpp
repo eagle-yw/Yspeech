@@ -116,7 +116,7 @@ TEST_F(TestIntegrationVadAsr, VadDetectsSpeechSegments) {
     }
 
     for (int i = 0; i < 100; ++i) {
-        vad.process(ctx_);
+        vad.process_batch(ctx_);
     }
 
     EXPECT_TRUE(ctx_.contains("vad_probability"));
@@ -150,8 +150,8 @@ TEST_F(TestIntegrationVadAsr, FeatureExtractToAsrPipeline) {
         ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
     }
 
-    fbank.process(ctx_);
-    asr.process(ctx_);
+    fbank.process_batch(ctx_);
+    asr.process_batch(ctx_);
 
     EXPECT_TRUE(ctx_.contains("fbank_features"));
 }
@@ -185,10 +185,10 @@ TEST_F(TestIntegrationVadAsr, CompleteVadToAsrPipeline) {
     }
 
     for (int i = 0; i < 50; ++i) {
-        vad.process(ctx_);
+        vad.process_batch(ctx_);
     }
 
-    asr.process(ctx_);
+    asr.process_batch(ctx_);
 
     EXPECT_TRUE(ctx_.contains("vad_probability"));
     EXPECT_TRUE(ctx_.contains("asr_text"));
@@ -222,7 +222,7 @@ TEST_F(TestIntegrationVadAsr, MultipleAsrModelsComparison) {
         config["language"] = "zh";
         config["output_key"] = "paraformer";
         paraformer.init(config);
-        paraformer.process(ctx_);
+        paraformer.process_batch(ctx_);
 
         EXPECT_TRUE(ctx_.contains("paraformer_text"));
         EXPECT_TRUE(ctx_.contains("paraformer_confidence"));
@@ -237,7 +237,7 @@ TEST_F(TestIntegrationVadAsr, MultipleAsrModelsComparison) {
         config["language"] = "auto";
         config["output_key"] = "whisper";
         whisper.init(config);
-        whisper.process(ctx_);
+        whisper.process_batch(ctx_);
 
         // Whisper may output empty text for test audio
         EXPECT_TRUE(ctx_.contains("whisper_text") || true);
@@ -251,7 +251,7 @@ TEST_F(TestIntegrationVadAsr, MultipleAsrModelsComparison) {
         config["detect_emotion"] = true;
         config["output_key"] = "sensevoice";
         sensevoice.init(config);
-        sensevoice.process(ctx_);
+        sensevoice.process_batch(ctx_);
 
         // SenseVoice may output empty text for test audio
         EXPECT_TRUE(ctx_.contains("sensevoice_text") || true);
@@ -294,7 +294,7 @@ TEST_F(TestIntegrationVadAsr, RealTimeStreamingSimulation) {
         }
         processed_samples = end;
 
-        vad.process(ctx_);
+        vad.process_batch(ctx_);
         
         if (ctx_.contains("vad_is_speech")) {
             bool is_speech = ctx_.get<bool>("vad_is_speech");
@@ -304,11 +304,11 @@ TEST_F(TestIntegrationVadAsr, RealTimeStreamingSimulation) {
         }
 
         if (processed_samples % 16000 == 0) {
-            asr.process(ctx_);
+            asr.process_batch(ctx_);
         }
     }
 
-    asr.process(ctx_);
+    asr.process_batch(ctx_);
 
     EXPECT_TRUE(speech_detected || ctx_.contains("asr_text"));
 }
@@ -322,7 +322,7 @@ TEST_F(TestIntegrationVadAsr, ErrorHandlingAndEdgeCases) {
     
     if (vad_model_exists()) {
         vad.init(vad_config);
-        EXPECT_NO_THROW(vad.process(ctx_));
+        EXPECT_NO_THROW(vad.process_batch(ctx_));
     }
 
     auto short_audio = generate_speech_like_audio(0.1f);
@@ -331,7 +331,7 @@ TEST_F(TestIntegrationVadAsr, ErrorHandlingAndEdgeCases) {
     }
 
     if (vad_model_exists()) {
-        EXPECT_NO_THROW(vad.process(ctx_));
+        EXPECT_NO_THROW(vad.process_batch(ctx_));
     }
 
     ctx_.init_audio_buffer("silence_buffer", 1, 16000);
@@ -339,7 +339,7 @@ TEST_F(TestIntegrationVadAsr, ErrorHandlingAndEdgeCases) {
         ctx_.get_audio_buffer("silence_buffer")->channels[0]->push(0.0f);
     }
 
-    EXPECT_NO_THROW(vad.process(ctx_));
+    EXPECT_NO_THROW(vad.process_batch(ctx_));
 }
 
 TEST_F(TestIntegrationVadAsr, ContextDataPersistence) {
@@ -359,7 +359,7 @@ TEST_F(TestIntegrationVadAsr, ContextDataPersistence) {
     for (float sample : audio1) {
         ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
     }
-    asr.process(ctx_);
+    asr.process_batch(ctx_);
 
     EXPECT_TRUE(ctx_.contains("asr_results"));
     
@@ -370,7 +370,7 @@ TEST_F(TestIntegrationVadAsr, ContextDataPersistence) {
     for (float sample : audio2) {
         ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
     }
-    asr.process(ctx_);
+    asr.process_batch(ctx_);
 
     auto results2 = ctx_.get<std::vector<AsrResult>>("asr_results");
     EXPECT_GT(results2.size(), count1);

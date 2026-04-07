@@ -1,7 +1,8 @@
 import std;
+import yspeech.engine;
 import yspeech.types;
-import yspeech.streaming_asr;
 import yspeech.audio.file;
+import yspeech.frame_source;
 
 int main(int argc, char* argv[]) {
     std::print("=== Yspeech 流式 ASR 实际音频测试 ===\n\n");
@@ -20,49 +21,103 @@ int main(int argc, char* argv[]) {
     std::print("音频文件: {}\n\n", audio_file);
     
     try {
-        std::vector<float> audio_data;
-        int sample_rate = 16000;
-        int num_channels = 1;
-        
-        {
-            yspeech::AudioFileStream audio_stream(audio_file);
-            sample_rate = static_cast<int>(audio_stream.sampleRate());
-            num_channels = audio_stream.micNum();
-            
-            std::vector<yspeech::Byte> buffer(4096);
-            
-            while (true) {
-                yspeech::Size bytes_read = audio_stream.read(buffer.data(), buffer.size());
-                if (bytes_read == 0) break;
-                
-                const std::int16_t* pcm = reinterpret_cast<const std::int16_t*>(buffer.data());
-                std::size_t num_samples = bytes_read / sizeof(std::int16_t);
-                
-                for (std::size_t i = 0; i < num_samples; ++i) {
-                    audio_data.push_back(static_cast<float>(pcm[i]) / 32768.0f);
-                }
-            }
-            
-            std::print("加载音频: {} 样本, {} 通道, {}Hz\n\n", 
-                audio_data.size(), num_channels, sample_rate);
-        }
-        
-        yspeech::StreamingAsr asr(config_file);
+        yspeech::Engine asr(config_file);
+        auto file_source = std::make_shared<yspeech::FileSource>(audio_file);
+        auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(file_source);
+        asr.set_frame_source(pipeline_source);
         
         std::atomic<int> result_count{0};
-        
-        asr.on_result([&result_count](const yspeech::AsrResult& result) {
-            result_count++;
-            std::print("\n[识别结果 #{}] {}\n", result_count.load(), result.text);
-            std::print("  置信度: {}\n", result.confidence);
-            std::print("  语言: {}\n", result.language);
-        });
-        
-        asr.on_vad([](bool is_speech, std::int64_t start_ms, std::int64_t end_ms) {
-            if (is_speech) {
-                std::print("[VAD] 语音开始: {}ms\n", start_ms);
-            } else {
-                std::print("[VAD] 语音结束: {}ms - {}ms\n", start_ms, end_ms);
+        std::mutex transcript_mutex;
+        std::string latest_partial;
+        std::string latest_segment_final;
+        std::string final_transcript;
+        std::string rendered_transcript;
+
+        auto normalize_text = [](std::string text) {
+            auto not_space = [](unsigned char ch) {
+                return !std::isspace(ch);
+            };
+
+            auto begin = std::find_if(text.begin(), text.end(), not_space);
+            auto end = std::find_if(text.rbegin(), text.rend(), not_space).base();
+            if (begin >= end) {
+                return std::string{};
+            }
+            return std::string(begin, end);
+        };
+
+        asr.on_event([&](const yspeech::EngineEvent& event) {
+            if (event.kind == yspeech::EngineEventKind::VadStart && event.vad_segment.has_value()) {
+                std::print("[VAD] 语音开始: {}ms\n", event.vad_segment->start_ms);
+                return;
+            }
+
+            if (event.kind == yspeech::EngineEventKind::VadEnd && event.vad_segment.has_value()) {
+                std::print("[VAD] 语音结束: {}ms - {}ms\n", event.vad_segment->start_ms, event.vad_segment->end_ms);
+                return;
+            }
+
+            if (!event.asr.has_value()) {
+                return;
+            }
+
+            auto text = normalize_text(event.asr->text);
+            if (text.empty()) {
+                return;
+            }
+
+            if (event.kind == yspeech::EngineEventKind::ResultPartial) {
+                std::lock_guard lock(transcript_mutex);
+                if (text == latest_partial) {
+                    return;
+                }
+
+                latest_partial = text;
+                result_count++;
+                std::string padded = text;
+                if (rendered_transcript.size() > padded.size()) {
+                    padded.append(rendered_transcript.size() - padded.size(), ' ');
+                }
+                rendered_transcript = text;
+
+                std::print("\r[实时转写 #{}] {}", result_count.load(), padded);
+                std::cout.flush();
+                return;
+            }
+
+            if (event.kind == yspeech::EngineEventKind::ResultSegmentFinal) {
+                {
+                    std::lock_guard lock(transcript_mutex);
+                    latest_segment_final = text;
+                    rendered_transcript = text;
+                }
+                if (event.vad_segment.has_value()) {
+                    std::print(
+                        "\n[段最终 {:>5}ms - {:>5}ms] {}\n",
+                        event.vad_segment->start_ms,
+                        event.vad_segment->end_ms,
+                        text
+                    );
+                }
+                return;
+            }
+
+            if (event.kind == yspeech::EngineEventKind::ResultStreamFinal) {
+                {
+                    std::lock_guard lock(transcript_mutex);
+                    final_transcript = text;
+                    rendered_transcript = text;
+                }
+                if (event.vad_segment.has_value()) {
+                    std::print(
+                        "\n[流最终 {:>5}ms - {:>5}ms] {}\n",
+                        event.vad_segment->start_ms,
+                        event.vad_segment->end_ms,
+                        text
+                    );
+                } else {
+                    std::print("\n[流最终] {}\n", text);
+                }
             }
         });
         
@@ -77,28 +132,45 @@ int main(int argc, char* argv[]) {
         
         std::print("开始流式识别...\n");
         asr.start();
-        
-        int chunk_size = 1600;
-        int total_chunks = (audio_data.size() + chunk_size - 1) / chunk_size;
-        
-        std::print("分块推送音频: {} 块, 每块 {} 样本 ({}ms)\n\n", 
-            total_chunks, chunk_size, chunk_size * 1000 / sample_rate);
-        
-        for (int i = 0; i < total_chunks; ++i) {
-            int offset = i * chunk_size;
-            int remaining = std::min(chunk_size, static_cast<int>(audio_data.size()) - offset);
-            
-            if (remaining > 0) {
-                asr.push_audio(audio_data.data() + offset, remaining);
+
+        std::print("通过统一 FrameSource 编排推送 10ms AudioFrame...\n\n");
+        while (!asr.input_eof_reached()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+
+        std::print("\n音频推送完成，等待剩余识别结果...\n");
+
+        auto settle_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        auto hard_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        int last_result_count = result_count.load();
+
+        while (std::chrono::steady_clock::now() < hard_deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+            int current_result_count = result_count.load();
+            if (current_result_count != last_result_count) {
+                last_result_count = current_result_count;
+                settle_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+                continue;
             }
-            
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+            if (std::chrono::steady_clock::now() >= settle_deadline) {
+                break;
+            }
         }
         
-        std::print("\n音频推送完成，等待处理...\n");
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        
         asr.stop();
+
+        {
+            std::lock_guard lock(transcript_mutex);
+            if (!final_transcript.empty()) {
+                std::print("\n最终转写：{}\n", final_transcript);
+            } else if (!latest_segment_final.empty()) {
+                std::print("\n最终转写：{}\n", latest_segment_final);
+            } else if (!latest_partial.empty()) {
+                std::print("\n最终转写：{}\n", latest_partial);
+            }
+        }
         
         auto stats = asr.get_stats();
         std::print("\n{}\n", stats.to_string());

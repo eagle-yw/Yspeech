@@ -298,7 +298,7 @@ TEST(ContextTest, ErrorFilteringByComponent) {
 }
 
 TEST(PipelineIntegration, ConfigErrorHandling) {
-    yspeech::Pipeline pipeline;
+    yspeech::PipelineManager pipeline;
     
     EXPECT_THROW(pipeline.build("nonexistent.json"), std::exception);
     
@@ -313,7 +313,7 @@ TEST(PipelineIntegration, ConfigErrorHandling) {
 
 TEST(PipelineIntegration, ErrorRecoveryWithMetadata) {
     yspeech::Context ctx;
-    yspeech::Pipeline pipeline;
+    yspeech::PipelineManager pipeline;
     
     nlohmann::json config = {
         {"name", "test_pipeline"},

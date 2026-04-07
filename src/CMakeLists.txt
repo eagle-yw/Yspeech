@@ -5,8 +5,11 @@ target_sources(yspeech
     PUBLIC FILE_SET CXX_MODULES BASE_DIRS . FILES
     yspeech/types.cppm
     yspeech/ring_buffer.cppm
+    yspeech/frame_ring.cppm
+    yspeech/stream_store.cppm
     yspeech/error.cppm
     yspeech/state.cppm
+    yspeech/data_keys.cppm
     yspeech/context.cppm
     yspeech/log.cppm
     yspeech/capability.cppm
@@ -16,25 +19,22 @@ target_sources(yspeech
     yspeech/op.cppm
     yspeech/op/vad/vad.cppm
     yspeech/op/vad/silero.cppm
-    yspeech/op/audio/converter.cppm
     yspeech/op/asr/base.cppm
     yspeech/op/asr/paraformer.cppm
     yspeech/op/asr/whisper.cppm
     yspeech/op/asr/sensevoice.cppm
     yspeech/op/feature/kaldi_fbank.cppm
     yspeech/pipeline_config.cppm
-    yspeech/pipeline.cppm
     yspeech/pipeline_manager.cppm
-    yspeech/stream_controller.cppm
+    yspeech/frame_source.cppm
+    yspeech/engine_runtime.cppm
     yspeech/engine.cppm
     yspeech/audio.cppm
     yspeech/audio/audio_file.cppm
-    yspeech/offline_asr.cppm
-    yspeech/streaming_asr.cppm
-    yspeech/speech_processor.cppm
     yspeech/performance_export.cppm
     yspeech/resource_monitor.cppm
     yspeech/performance_alert.cppm
+    yspeech/runtime_common.cppm
     yspeech/operators.cppm
     yspeech/yspeech.cppm
 )

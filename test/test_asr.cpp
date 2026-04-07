@@ -6,7 +6,7 @@
 
 import yspeech.context;
 import yspeech.types;
-import yspeech.speech_processor;
+import yspeech.engine;
 import yspeech.op.asr.base;
 import yspeech.op.asr.paraformer;
 import yspeech.op.asr.whisper;
@@ -91,7 +91,7 @@ TEST_F(TestFeatureExtract, ProcessAudio) {
         ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
     }
 
-    extractor.process(ctx_);
+    extractor.process_batch(ctx_);
 
     EXPECT_TRUE(ctx_.contains("fbank_num_frames"));
     int num_frames = ctx_.get<int>("fbank_num_frames");
@@ -118,7 +118,7 @@ TEST_F(TestFeatureExtract, KaldiFbankFeatureDim) {
         ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
     }
 
-    extractor.process(ctx_);
+    extractor.process_batch(ctx_);
 
     auto features = ctx_.get<std::vector<std::vector<float>>>("fbank_features");
     EXPECT_GT(features.size(), 0);
@@ -156,6 +156,10 @@ TEST_F(TestAsrParaformer, BasicInit) {
 }
 
 TEST_F(TestAsrParaformer, ConfigParameters) {
+    if (!model_exists()) {
+        GTEST_SKIP() << "ParaFormer model files not found";
+    }
+
     OpAsrParaformer asr;
 
     nlohmann::json config;
@@ -204,6 +208,10 @@ TEST_F(TestAsrWhisper, BasicInit) {
 }
 
 TEST_F(TestAsrWhisper, ConfigParameters) {
+    if (!model_exists()) {
+        GTEST_SKIP() << "Whisper model files not found";
+    }
+
     OpAsrWhisper asr;
 
     nlohmann::json config;
@@ -267,15 +275,21 @@ TEST_F(TestAsrSenseVoice, EmotionDetection) {
 
 // Test ASR with audio processing
 TEST_F(TestAsrParaformer, ProcessEmptyBuffer) {
+    if (!model_exists()) {
+        GTEST_SKIP() << "ParaFormer model files not found";
+    }
+
     OpAsrParaformer asr;
 
     nlohmann::json config;
+    config["model_path"] = "test_data/paraformer.onnx";
+    config["tokens_path"] = "test_data/paraformer_tokens.txt";
     config["input_buffer_key"] = "audio_planar";
     config["output_key"] = "asr";
 
     asr.init(config);
 
-    EXPECT_NO_THROW(asr.process(ctx_));
+    EXPECT_NO_THROW(asr.process_batch(ctx_));
     EXPECT_FALSE(ctx_.contains("asr_text"));
 }
 
@@ -305,7 +319,7 @@ TEST_F(TestAsrWhisper, ProcessAudio) {
         ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
     }
 
-    asr.process(ctx_);
+    asr.process_batch(ctx_);
 
     // Should have some output (even if placeholder)
     EXPECT_TRUE(ctx_.contains("asr_text"));

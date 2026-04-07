@@ -53,7 +53,7 @@ TEST_F(TestKaldiFbankPerformance, BenchmarkFeatureExtraction) {
         for (float sample : audio) {
             ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
         }
-        fbank.process(ctx_);
+        fbank.process_batch(ctx_);
         ctx_.init_audio_buffer("audio_planar", 1, 16000 * 60);
 
         // Benchmark
@@ -62,7 +62,7 @@ TEST_F(TestKaldiFbankPerformance, BenchmarkFeatureExtraction) {
         }
         
         auto start = std::chrono::high_resolution_clock::now();
-        fbank.process(ctx_);
+        fbank.process_batch(ctx_);
         auto end = std::chrono::high_resolution_clock::now();
         
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
@@ -107,7 +107,7 @@ TEST_F(TestKaldiFbankPerformance, BenchmarkDifferentBins) {
         }
         
         auto start = std::chrono::high_resolution_clock::now();
-        fbank.process(ctx_);
+        fbank.process_batch(ctx_);
         auto end = std::chrono::high_resolution_clock::now();
         
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
@@ -151,7 +151,7 @@ TEST_F(TestKaldiFbankPerformance, BenchmarkMemoryUsage) {
             ctx_.get_audio_buffer("audio_planar")->channels[0]->push(sample);
         }
         
-        fbank.process(ctx_);
+        fbank.process_batch(ctx_);
         
         auto features = ctx_.get<std::vector<std::vector<float>>>("fbank_features");
         size_t feature_bytes = features.size() * features[0].size() * sizeof(float);
@@ -200,7 +200,7 @@ TEST_F(TestKaldiFbankPerformance, BenchmarkRealAudio) {
     float duration = pcm_data.size() / 16000.0f;
     
     auto start = std::chrono::high_resolution_clock::now();
-    fbank.process(ctx_);
+    fbank.process_batch(ctx_);
     auto end = std::chrono::high_resolution_clock::now();
     
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;

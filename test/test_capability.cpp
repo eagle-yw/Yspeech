@@ -139,7 +139,7 @@ TEST(OperatorCapabilityTest, PrePostPhases) {
     op.install(PostCapability(json{{"value", 20}}), "post");
     
     Context ctx;
-    op.process(ctx);
+    op.process_batch(ctx);
     
     EXPECT_TRUE(ctx.contains("pre_applied"));
     EXPECT_TRUE(ctx.contains("op_processed"));
@@ -169,7 +169,7 @@ TEST(OperatorCapabilityTest, ConfigInstall) {
     EXPECT_TRUE(op.has_capability("PreCapability"));
     
     Context ctx;
-    op.process(ctx);
+    op.process_batch(ctx);
     
     EXPECT_EQ(ctx.get<int>("pre_value"), 123);
 }

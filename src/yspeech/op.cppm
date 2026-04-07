@@ -7,20 +7,67 @@ export module yspeech.op;
 import std;
 import yspeech.context;
 import yspeech.capability;
+import yspeech.stream_store;
 
 namespace yspeech {
 
 using json = nlohmann::json;
 
 export template <typename T>
-concept Operator = requires(T t, Context& ctx, const json& config) {
+concept OperatorConfigurable = requires(T t, const json& config) {
     { t.init(config) } -> std::same_as<void>;
-    { t.process(ctx) } -> std::same_as<void>;    
 };
+
+export template <typename T>
+concept OperatorBatchProcess = requires(T t, Context& ctx) {
+    { t.process_batch(ctx) } -> std::same_as<void>;
+};
+
+export enum class StreamProcessStatus {
+    NoOp,
+    ConsumedInput,
+    ProducedOutput,
+    SegmentFinalized,
+    StreamFinalized,
+    NeedMoreInput,
+    OverrunRecovered
+};
+
+export struct StreamProcessResult {
+    StreamProcessStatus status = StreamProcessStatus::NoOp;
+    std::size_t consumed_frames = 0;
+    std::size_t produced_items = 0;
+    bool wake_downstream = false;
+};
+
+export template <typename T>
+concept OperatorStreamReady = requires(T t, Context& ctx, StreamStore& store) {
+    { t.ready(ctx, store) } -> std::convertible_to<bool>;
+};
+
+export template <typename T>
+concept OperatorStreamProcess = requires(T t, Context& ctx, StreamStore& store) {
+    { t.process_stream(ctx, store) } -> std::same_as<StreamProcessResult>;
+};
+
+export template <typename T>
+concept OperatorStreamFlush = requires(T t, Context& ctx, StreamStore& store) {
+    { t.flush(ctx, store) } -> std::same_as<StreamProcessResult>;
+};
+
+export template <typename T>
+concept OperatorDeinitializable = requires(T t) {
+    { t.deinit() } -> std::same_as<void>;
+};
+
+export template <typename T>
+concept OperatorImplementation =
+    OperatorConfigurable<T> &&
+    OperatorBatchProcess<T>;
 
 export class OperatorIface {
 public:
-    template<Operator T>
+    template<OperatorImplementation T>
     OperatorIface(T&& op): self_(std::make_unique<Model<std::remove_cvref_t<T>>>(std::forward<T>(op))) {}
 
     OperatorIface(const OperatorIface&) = delete;
@@ -33,10 +80,28 @@ public:
         install_capabilities_from_config(config);
     }
 
-    auto process(Context& ctx) -> void {
+    auto process_batch(Context& ctx) -> void {
         apply_capabilities(ctx, CapabilityPhase::Pre);
-        self_->process(ctx);
+        self_->process_batch(ctx);
         apply_capabilities(ctx, CapabilityPhase::Post);
+    }
+
+    auto ready_stream(Context& ctx, StreamStore& store) -> bool {
+        return self_->ready_stream(ctx, store);
+    }
+
+    auto process_stream(Context& ctx, StreamStore& store) -> StreamProcessResult {
+        apply_capabilities(ctx, CapabilityPhase::Pre);
+        auto result = self_->process_stream(ctx, store);
+        apply_capabilities(ctx, CapabilityPhase::Post);
+        return result;
+    }
+
+    auto flush_stream(Context& ctx, StreamStore& store) -> StreamProcessResult {
+        apply_capabilities(ctx, CapabilityPhase::Pre);
+        auto result = self_->flush_stream(ctx, store);
+        apply_capabilities(ctx, CapabilityPhase::Post);
+        return result;
     }
 
     auto deinit() -> void {
@@ -95,12 +160,15 @@ public:
     struct Concept {
         virtual ~Concept() = default;
         virtual auto init(const json& config) -> void = 0;
-        virtual auto process(Context& ctx) -> void = 0;
+        virtual auto process_batch(Context& ctx) -> void = 0;
+        virtual auto ready_stream(Context& ctx, StreamStore& store) -> bool = 0;
+        virtual auto process_stream(Context& ctx, StreamStore& store) -> StreamProcessResult = 0;
+        virtual auto flush_stream(Context& ctx, StreamStore& store) -> StreamProcessResult = 0;
         virtual auto deinit() -> void = 0;
         virtual auto type() const -> const std::type_info& = 0;
     };
 
-    template<Operator T>
+    template<OperatorImplementation T>
     struct Model: Concept {
         Model(const T& op): op_(op) {}
         Model(T&& op): op_(std::move(op)) {}
@@ -109,12 +177,40 @@ public:
             op_.init(config);
         }
 
-        auto process(Context& ctx) -> void override {
-            op_.process(ctx);
+        auto process_batch(Context& ctx) -> void override {
+            op_.process_batch(ctx);
+        }
+
+        auto ready_stream(Context& ctx, StreamStore& store) -> bool override {
+            if constexpr (OperatorStreamReady<T>) {
+                return op_.ready(ctx, store);
+            } else {
+                return true;
+            }
+        }
+
+        auto process_stream(Context& ctx, StreamStore& store) -> StreamProcessResult override {
+            if constexpr (OperatorStreamProcess<T>) {
+                return op_.process_stream(ctx, store);
+            } else {
+                op_.process_batch(ctx);
+                return StreamProcessResult{
+                    .status = StreamProcessStatus::ProducedOutput,
+                    .wake_downstream = true
+                };
+            }
+        }
+
+        auto flush_stream(Context& ctx, StreamStore& store) -> StreamProcessResult override {
+            if constexpr (OperatorStreamFlush<T>) {
+                return op_.flush(ctx, store);
+            } else {
+                return {};
+            }
         }
 
         auto deinit() -> void override {
-            if constexpr (requires { op_.deinit(); }) {
+            if constexpr (OperatorDeinitializable<T>) {
                 op_.deinit();
             }
         }

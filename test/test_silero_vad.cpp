@@ -58,7 +58,7 @@ TEST_F(TestSileroVad, ProcessEmptyBuffer) {
 
     vad.init(config);
 
-    EXPECT_NO_THROW(vad.process(ctx_));
+    EXPECT_NO_THROW(vad.process_batch(ctx_));
 
     EXPECT_FALSE(ctx_.contains("vad_probability"));
 }
@@ -88,7 +88,7 @@ TEST_F(TestSileroVad, ProcessWithAudioData) {
     }
 
     for (int i = 0; i < 5; ++i) {
-        vad.process(ctx_);
+        vad.process_batch(ctx_);
     }
 
     if (ctx_.contains("vad_probability")) {
@@ -149,7 +149,7 @@ TEST_F(TestSileroVad, VadSegmentOutput) {
     }
 
     for (int i = 0; i < 30; ++i) {
-        vad.process(ctx_);
+        vad.process_batch(ctx_);
     }
 
     if (ctx_.contains("vad_segments")) {
