@@ -17,6 +17,7 @@ export struct EngineConfigOptions {
     std::optional<std::string> audio_path;  ///< Optional audio file path override for source.type=file.
     std::optional<double> playback_rate;    ///< Optional playback rate override; 0.0 means no pacing.
     std::optional<std::string> log_level;   ///< Optional runtime log level override.
+    std::optional<bool> enable_event_queue; ///< Optional internal event queue switch; false for callback-only mode.
 };
 
 export class Engine {
@@ -47,6 +48,7 @@ public:
     void push_audio(const float* data, size_t size);
 
     bool input_eof_reached() const;
+    void set_event_queue_enabled(bool enabled);
 
     bool has_event() const;
     EngineEvent get_event();
@@ -83,7 +85,13 @@ public:
         bind_runtime_callbacks();
     }
 
-    void start() { runtime_.start(); }
+    void start() {
+        event_dispatch_calls_.store(0, std::memory_order_release);
+        event_dispatch_overhead_ns_.store(0, std::memory_order_release);
+        event_queue_push_ns_.store(0, std::memory_order_release);
+        event_callback_ns_.store(0, std::memory_order_release);
+        runtime_.start();
+    }
     void finish() { runtime_.finish(); }
     void stop() { runtime_.stop(); }
     bool is_running() const { return runtime_.is_running(); }
@@ -92,6 +100,7 @@ public:
     void push_audio(const std::vector<float>& audio) { runtime_.push_audio(audio); }
     void push_audio(const float* data, size_t size) { runtime_.push_audio(data, size); }
     bool input_eof_reached() const { return runtime_.input_eof_reached(); }
+    void set_event_queue_enabled(bool enabled) { event_queue_enabled_.store(enabled, std::memory_order_release); }
 
     bool has_event() const {
         std::lock_guard lock(event_mutex_);
@@ -135,7 +144,22 @@ public:
     }
 
     ProcessingStats get_stats() const {
-        return runtime_.get_stats();
+        auto stats = runtime_.get_stats();
+        const auto calls = event_dispatch_calls_.load(std::memory_order_acquire);
+        const auto dispatch_ns = event_dispatch_overhead_ns_.load(std::memory_order_acquire);
+        const auto queue_push_ns = event_queue_push_ns_.load(std::memory_order_acquire);
+        const auto callback_ns = event_callback_ns_.load(std::memory_order_acquire);
+        stats.event_dispatch_calls = static_cast<std::size_t>(calls);
+        stats.event_dispatch_overhead_ms = static_cast<double>(dispatch_ns) / 1'000'000.0;
+        stats.event_queue_push_time_ms = static_cast<double>(queue_push_ns) / 1'000'000.0;
+        stats.event_callback_time_ms = static_cast<double>(callback_ns) / 1'000'000.0;
+        if (calls > 0) {
+            const double calls_d = static_cast<double>(calls);
+            stats.event_dispatch_avg_ms = stats.event_dispatch_overhead_ms / calls_d;
+            stats.event_queue_push_avg_ms = stats.event_queue_push_time_ms / calls_d;
+            stats.event_callback_avg_ms = stats.event_callback_time_ms / calls_d;
+        }
+        return stats;
     }
 
     const nlohmann::json& get_config() const {
@@ -161,6 +185,11 @@ private:
     StatusCallback status_callback_;
     PerformanceCallback performance_callback_;
     AlertCallback alert_callback_;
+    std::atomic<bool> event_queue_enabled_{true};
+    std::atomic<std::uint64_t> event_dispatch_calls_{0};
+    std::atomic<std::uint64_t> event_dispatch_overhead_ns_{0};
+    std::atomic<std::uint64_t> event_queue_push_ns_{0};
+    std::atomic<std::uint64_t> event_callback_ns_{0};
 
     static auto build_config(const std::string& config_path, const EngineConfigOptions& options) -> nlohmann::json {
         auto config = load_runtime_config(config_path);
@@ -256,13 +285,31 @@ private:
     }
 
     void dispatch_event(EngineEvent event) {
-        {
+        const auto dispatch_start = std::chrono::steady_clock::now();
+        std::uint64_t queue_push_ns = 0;
+        if (event_queue_enabled_.load(std::memory_order_acquire)) {
+            const auto queue_start = std::chrono::steady_clock::now();
             std::lock_guard lock(event_mutex_);
             event_queue_.push(event);
+            queue_push_ns = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - queue_start).count());
+            event_queue_push_ns_.fetch_add(queue_push_ns, std::memory_order_relaxed);
         }
+        std::uint64_t callback_ns = 0;
         if (event_callback_) {
+            const auto callback_start = std::chrono::steady_clock::now();
             event_callback_(event);
+            callback_ns = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - callback_start).count());
+            event_callback_ns_.fetch_add(callback_ns, std::memory_order_relaxed);
         }
+        const auto dispatch_ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - dispatch_start).count());
+        event_dispatch_overhead_ns_.fetch_add(dispatch_ns, std::memory_order_relaxed);
+        event_dispatch_calls_.fetch_add(1, std::memory_order_relaxed);
     }
 
     static auto to_engine_event_kind(AsrResultKind kind) -> EngineEventKind {
@@ -282,7 +329,11 @@ Engine::Engine(const std::string& config_path)
     : impl_(std::make_unique<Impl>(config_path)) {}
 
 Engine::Engine(const std::string& config_path, const EngineConfigOptions& options)
-    : impl_(std::make_unique<Impl>(config_path, options)) {}
+    : impl_(std::make_unique<Impl>(config_path, options)) {
+    if (options.enable_event_queue.has_value()) {
+        impl_->set_event_queue_enabled(*options.enable_event_queue);
+    }
+}
 
 Engine::Engine(const nlohmann::json& config)
     : impl_(std::make_unique<Impl>(config)) {}
@@ -323,6 +374,10 @@ void Engine::push_audio(const float* data, size_t size) {
 
 bool Engine::input_eof_reached() const {
     return impl_->input_eof_reached();
+}
+
+void Engine::set_event_queue_enabled(bool enabled) {
+    impl_->set_event_queue_enabled(enabled);
 }
 
 bool Engine::has_event() const {

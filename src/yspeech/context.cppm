@@ -122,8 +122,9 @@ public:
 
     template <typename T>
     void set(const std::string& key, T&& value) {
+        std::any boxed_value(std::forward<T>(value));
         std::unique_lock lock(mutex_);
-        data_[key] = std::forward<T>(value);
+        data_[key] = std::move(boxed_value);
     }
 
     template <typename T>
@@ -659,6 +660,16 @@ public:
     void record_operator_time(const std::string& op_id, double time_ms) {
         std::unique_lock lock(mutex_);
         performance_stats_.record_operator_time(op_id, time_ms);
+    }
+
+    void record_operator_effective_call(const std::string& op_id) {
+        std::unique_lock lock(mutex_);
+        performance_stats_.record_operator_effective_call(op_id);
+    }
+
+    void record_operator_effective_sample(const std::string& op_id, double time_ms) {
+        std::unique_lock lock(mutex_);
+        performance_stats_.record_operator_effective_sample(op_id, time_ms);
     }
 };
 }

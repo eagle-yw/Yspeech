@@ -181,6 +181,11 @@ private:
         if (config.contains("output_key")) {
             output_key_ = config["output_key"].get<std::string>();
         }
+        if (config.contains("__op_id")) {
+            operator_id_ = config["__op_id"].get<std::string>();
+        } else {
+            operator_id_ = output_key_;
+        }
         reader_key_ = output_key_ + "_reader";
         if (config.contains("reader_key")) {
             reader_key_ = config["reader_key"].get<std::string>();
@@ -456,7 +461,11 @@ private:
     }
 
     void process_chunk(Context& ctx, const std::vector<float>& audio_chunk) {
+        const auto infer_start = std::chrono::steady_clock::now();
         float probability = infer(audio_chunk);
+        const auto infer_end = std::chrono::steady_clock::now();
+        const auto infer_ms = std::chrono::duration<double, std::milli>(infer_end - infer_start).count();
+        ctx.record_operator_effective_sample(operator_id_, infer_ms);
 
         update_state(probability, audio_chunk.size());
 
@@ -496,8 +505,10 @@ private:
         std::vector<VadSegment> segments = ctx.get_or_default(
             output_key_ + "_segments", std::vector<VadSegment>{});
         segments.push_back(segment);
+        const auto segment_count = segments.size();
         ctx.set(output_key_ + "_segments", std::move(segments));
         ctx.set(output_key_ + "_last_segment", segment);
+        ctx.set(output_key_ + "_segment_count", segment_count);
 
         log_info("VAD segment detected: [{}ms - {}ms], confidence={:.2f}",
                  segment.start_ms, segment.end_ms, segment.confidence);
@@ -555,6 +566,7 @@ private:
     std::string input_frame_key_ = "audio_frames";
     std::string reader_key_ = "vad_reader";
     std::string output_key_ = "vad";
+    std::string operator_id_ = "vad";
     int min_speech_duration_ms_ = MIN_SPEECH_DURATION_MS;
     int min_silence_duration_ms_ = MIN_SILENCE_DURATION_MS;
     std::vector<float> pending_samples_;

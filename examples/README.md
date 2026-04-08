@@ -57,6 +57,16 @@ cmake --build build
     1.0
 ```
 
+**Benchmark（多次统计）:**
+```bash
+./build/examples/streaming_demo \
+    examples/configs/streaming_paraformer_asr.json \
+    model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+    20 \
+    --queue 0 \
+    --benchmark 10
+```
+
 **输出示例:**
 ```
 === Yspeech 流式 ASR 实际音频测试 ===
@@ -132,18 +142,33 @@ int main(int argc, char* argv[]) {
     options.audio_path = argv[2];
     options.playback_rate = 0.0;
     yspeech::Engine engine(argv[1], options);
+    std::mutex status_mutex;
+    std::condition_variable status_cv;
+    bool input_eof_seen = false;
     yspeech::AsrResult result;
     engine.on_event([&](const yspeech::EngineEvent& event) {
         if (event.asr && event.kind == yspeech::EngineEventKind::ResultStreamFinal) {
             result = *event.asr;
         }
     });
+    engine.on_status([&](const std::string& status) {
+        if (status != "input_eof") {
+            return;
+        }
+        {
+            std::lock_guard lock(status_mutex);
+            input_eof_seen = true;
+        }
+        status_cv.notify_all();
+    });
     engine.start();
     engine.finish();
-    while (!engine.input_eof_reached()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    {
+        std::unique_lock lock(status_mutex);
+        status_cv.wait_for(lock, std::chrono::seconds(30), [&]() {
+            return input_eof_seen || engine.input_eof_reached();
+        });
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
     engine.stop();
     std::println("识别结果：{}", result.text);
     return 0;
@@ -160,8 +185,16 @@ cmake --build build --target streaming_demo
 
 **运行:**
 ```bash
-./build/examples/streaming_demo <配置文件> <音频文件> [播放倍率]
+./build/examples/streaming_demo [配置文件] [音频文件] [播放倍率] [队列开关]
+./build/examples/streaming_demo [配置文件] [音频文件] [播放倍率] --queue <0|1> --benchmark <N>
 ```
+
+**参数说明:**
+- `播放倍率`: `1.0` 为音频真实速度，`20` 为 20 倍速。
+- `队列开关`: 兼容旧参数位，`1/0` 或 `true/false`，用于控制 internal event queue。
+- `--benchmark N`: 连续运行 `N` 次，输出均值/标准差/最小值/最大值。
+- `--queue <0|1>`: 显式设置 internal event queue，建议配合 benchmark 做对比。
+- `--quiet`: 减少过程输出（benchmark 模式默认启用）。
 
 **代码示例:**
 ```cpp
@@ -181,12 +214,6 @@ engine.on_event([](const yspeech::EngineEvent& event) {
 
 engine.start();
 engine.finish();
-
-while (!engine.input_eof_reached()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-}
-
-std::this_thread::sleep_for(std::chrono::seconds(2));
 engine.stop();
 ```
 

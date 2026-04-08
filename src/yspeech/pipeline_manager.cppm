@@ -60,9 +60,11 @@ public:
             try {
                 auto op = OperatorFactory::get_instance().create_operator(name);
                 
-                if (!op_config.params.is_null()) {
-                    op.init(op_config.params);
-                }
+                nlohmann::json op_params = op_config.params.is_null()
+                    ? nlohmann::json::object()
+                    : op_config.params;
+                op_params["__op_id"] = id;
+                op.init(op_params);
                 
                 install_global_capabilities(op);
                 

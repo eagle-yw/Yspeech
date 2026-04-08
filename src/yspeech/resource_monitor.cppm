@@ -121,15 +121,16 @@ public:
     }
     
     static void start_monitoring(int interval_ms = 100) {
-        if (running_) return;
+        if (running_.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
         
-        running_ = true;
         cpu_samples_ = 0;
         cpu_sum_ = 0.0;
         peak_cpu_ = 0.0;
         
         monitor_thread_ = std::thread([interval_ms]() {
-            while (running_) {
+            while (running_.load(std::memory_order_acquire)) {
                 auto usage = get_current();
                 
                 peak_memory_mb_.store(
@@ -149,13 +150,19 @@ public:
                     }
                 }
                 
-                std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+                std::unique_lock<std::mutex> lock(monitor_mutex_);
+                monitor_cv_.wait_for(lock, std::chrono::milliseconds(interval_ms), []() {
+                    return !running_.load(std::memory_order_acquire);
+                });
             }
         });
     }
     
     static void stop_monitoring() {
-        running_ = false;
+        if (!running_.exchange(false, std::memory_order_acq_rel)) {
+            return;
+        }
+        monitor_cv_.notify_all();
         if (monitor_thread_.joinable()) {
             monitor_thread_.join();
         }
@@ -192,6 +199,8 @@ private:
     static inline std::atomic<size_t> cpu_samples_{0};
     static inline std::atomic<double> cpu_sum_{0.0};
     static inline std::thread monitor_thread_;
+    static inline std::mutex monitor_mutex_;
+    static inline std::condition_variable monitor_cv_;
 };
 
 }

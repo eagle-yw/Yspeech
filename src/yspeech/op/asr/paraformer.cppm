@@ -43,7 +43,6 @@ public:
         if (config.contains("vad_input_key")) {
             vad_input_key_ = config["vad_input_key"].get<std::string>();
         }
-
         init_onnx_session();
         load_tokens();
 
@@ -52,9 +51,8 @@ public:
 
     bool ready(Context& ctx, StreamStore&) {
         const auto feature_version = ctx.get_or_default<std::uint64_t>(feature_input_key_ + "_version", 0);
-        const auto features = ctx.get_or_default(feature_input_key_ + "_features", std::vector<std::vector<float>>{});
-        const auto segment_count = ctx.get_or_default(vad_input_key_ + "_segments", std::vector<VadSegment>{}).size();
-        const int current_frames = static_cast<int>(features.size());
+        const int current_frames = ctx.get_or_default<int>(feature_input_key_ + "_num_frames", 0);
+        const auto segment_count = ctx.get_or_default<std::size_t>(vad_input_key_ + "_segment_count", 0);
         const bool has_partial_work =
             feature_version > last_feature_version_ &&
             ((current_frames - last_feature_count_) >= min_new_feature_frames_ || last_feature_version_ == 0);
@@ -64,22 +62,29 @@ public:
     }
 
     StreamProcessResult process_stream(Context& ctx, StreamStore&) override {
-        std::vector<std::vector<float>> features = ctx.get_or_default(
-            feature_input_key_ + "_features", std::vector<std::vector<float>>{});
-        if (features.empty()) {
-            return {};
-        }
-
         const auto feature_version = ctx.get_or_default<std::uint64_t>(feature_input_key_ + "_version", 0);
-        const auto segments = ctx.get_or_default(vad_input_key_ + "_segments", std::vector<VadSegment>{});
-        const auto segment_count = segments.size();
+        const auto segment_count = ctx.get_or_default<std::size_t>(vad_input_key_ + "_segment_count", 0);
         const bool should_emit_segment_final =
             segment_count > finalized_segment_count_ && feature_version > finalized_segment_feature_version_;
         if (feature_version <= last_feature_version_ && !should_emit_segment_final) {
             return {};
         }
 
-        AsrResult result = infer(features);
+        const auto* features = get_features_ref(ctx, feature_input_key_ + "_features");
+        if (!features || features->empty()) {
+            return {};
+        }
+
+        AsrResult result;
+        if (feature_version == last_feature_version_ && last_result_cache_.has_value()) {
+            result = *last_result_cache_;
+        } else {
+            const auto infer_start = std::chrono::steady_clock::now();
+            result = infer(*features);
+            const auto infer_end = std::chrono::steady_clock::now();
+            const auto infer_ms = std::chrono::duration<double, std::milli>(infer_end - infer_start).count();
+            ctx.record_operator_effective_sample(operator_id_, infer_ms);
+        }
         if (result.text.empty()) {
             return {
                 .status = StreamProcessStatus::NeedMoreInput
@@ -99,19 +104,20 @@ public:
         events.push_back(AsrEvent{
             .kind = should_emit_segment_final ? AsrResultKind::SegmentFinal : AsrResultKind::Partial,
             .result = result,
-            .segment = should_emit_segment_final && !segments.empty()
-                ? std::optional<VadSegment>(segments.back())
+            .segment = should_emit_segment_final && ctx.contains(vad_input_key_ + "_last_segment")
+                ? std::optional<VadSegment>(ctx.get<VadSegment>(vad_input_key_ + "_last_segment"))
                 : std::nullopt
         });
         ctx.set(output_key_ + "_events", std::move(events));
 
         last_feature_version_ = feature_version;
-        last_feature_count_ = static_cast<int>(features.size());
+        last_feature_count_ = static_cast<int>(features->size());
         if (should_emit_segment_final) {
             finalized_segment_count_ = segment_count;
             finalized_segment_feature_version_ = feature_version;
         }
         finalized_stream_feature_version_ = 0;
+        last_result_cache_ = result;
 
         return StreamProcessResult{
             .status = should_emit_segment_final ? StreamProcessStatus::SegmentFinalized
@@ -122,18 +128,26 @@ public:
     }
 
     StreamProcessResult flush(Context& ctx, StreamStore&) override {
-        std::vector<std::vector<float>> features = ctx.get_or_default(
-            feature_input_key_ + "_features", std::vector<std::vector<float>>{});
-        if (features.empty()) {
-            return {};
-        }
-
         const auto feature_version = ctx.get_or_default<std::uint64_t>(feature_input_key_ + "_version", 0);
         if (feature_version == finalized_stream_feature_version_) {
             return {};
         }
 
-        AsrResult result = infer(features);
+        const auto* features = get_features_ref(ctx, feature_input_key_ + "_features");
+        if (!features || features->empty()) {
+            return {};
+        }
+
+        AsrResult result;
+        if (feature_version == last_feature_version_ && last_result_cache_.has_value()) {
+            result = *last_result_cache_;
+        } else {
+            const auto infer_start = std::chrono::steady_clock::now();
+            result = infer(*features);
+            const auto infer_end = std::chrono::steady_clock::now();
+            const auto infer_ms = std::chrono::duration<double, std::milli>(infer_end - infer_start).count();
+            ctx.record_operator_effective_sample(operator_id_, infer_ms);
+        }
         if (result.text.empty()) {
             return {};
         }
@@ -158,8 +172,9 @@ public:
         ctx.set(output_key_ + "_events", std::move(events));
 
         last_feature_version_ = feature_version;
-        last_feature_count_ = static_cast<int>(features.size());
+        last_feature_count_ = static_cast<int>(features->size());
         finalized_stream_feature_version_ = feature_version;
+        last_result_cache_ = result;
 
         return StreamProcessResult{
             .status = StreamProcessStatus::StreamFinalized,
@@ -169,12 +184,33 @@ public:
     }
 
     void deinit() override {
+        log_infer_profile();
         session_.reset();
         env_.reset();
+        input_buffer_.clear();
+        last_result_cache_.reset();
+        infer_latency_ms_.clear();
+        infer_total_ms_ = 0.0;
+        infer_pack_ms_ = 0.0;
+        infer_run_ms_ = 0.0;
+        infer_decode_ms_ = 0.0;
+        infer_calls_ = 0;
         AsrBase::deinit();
     }
 
 private:
+    static auto get_features_ref(Context& ctx, const std::string& key)
+        -> const std::vector<std::vector<float>>* {
+        if (!ctx.contains(key)) {
+            return nullptr;
+        }
+        try {
+            return &ctx.get<std::vector<std::vector<float>>>(key);
+        } catch (const std::exception&) {
+            return nullptr;
+        }
+    }
+
     void init_onnx_session() {
         Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "yspeech_paraformer");
         env_ = std::make_unique<Ort::Env>(std::move(env));
@@ -248,7 +284,26 @@ private:
         log_debug("Loaded {} tokens from {}", id_to_token_.size(), tokens_path_);
     }
 
+    void log_infer_profile() {
+        if (infer_calls_ == 0) {
+            return;
+        }
+        auto samples = infer_latency_ms_;
+        std::sort(samples.begin(), samples.end());
+        const auto pick = [&](double q) {
+            const auto idx = static_cast<std::size_t>(
+                std::clamp<double>(q * static_cast<double>(samples.size() - 1), 0.0, static_cast<double>(samples.size() - 1)));
+            return samples[idx];
+        };
+        const double avg = infer_total_ms_ / static_cast<double>(infer_calls_);
+        log_info(
+            "Paraformer infer profile: calls={}, total={:.2f}ms, avg={:.2f}ms, p95={:.2f}ms, p99={:.2f}ms, pack={:.2f}ms, run={:.2f}ms, decode={:.2f}ms",
+            infer_calls_, infer_total_ms_, avg, pick(0.95), pick(0.99), infer_pack_ms_, infer_run_ms_, infer_decode_ms_);
+    }
+
     AsrResult infer(const std::vector<std::vector<float>>& features) {
+        using clock = std::chrono::steady_clock;
+        const auto infer_start = clock::now();
         AsrResult result;
 
         if (!session_ || features.empty()) {
@@ -262,20 +317,23 @@ private:
 
         log_debug("Inference: {} frames, {} dims", num_frames, feat_dim);
 
-        std::vector<float> input_data;
-        input_data.reserve(num_frames * feat_dim);
+        const auto flattened_size = static_cast<std::size_t>(num_frames * feat_dim);
+        input_buffer_.resize(flattened_size);
+        float* dst = input_buffer_.data();
         for (const auto& frame : features) {
-            input_data.insert(input_data.end(), frame.begin(), frame.end());
+            std::copy(frame.begin(), frame.end(), dst);
+            dst += feat_dim;
         }
+        const auto after_pack = clock::now();
 
-        std::vector<int64_t> input_shape = {1, num_frames, feat_dim};
-        std::vector<int64_t> length_shape = {1};
-        std::vector<int32_t> length_data = {num_frames};
+        const std::array<int64_t, 3> input_shape = {1, num_frames, feat_dim};
+        const std::array<int64_t, 1> length_shape = {1};
+        std::array<int32_t, 1> length_data = {num_frames};
 
         log_debug("Creating input tensors...");
 
         Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
-            memory_info_, input_data.data(), input_data.size(), 
+            memory_info_, input_buffer_.data(), input_buffer_.size(),
             input_shape.data(), input_shape.size());
         
         Ort::Value length_tensor = Ort::Value::CreateTensor<int32_t>(
@@ -284,8 +342,8 @@ private:
 
         std::array<Ort::Value, 2> input_tensors = {std::move(input_tensor), std::move(length_tensor)};
 
-        std::vector<const char*> input_names = {"speech", "speech_lengths"};
-        std::vector<const char*> output_names = {"logits", "token_num"};
+        static constexpr std::array<const char*, 2> input_names = {"speech", "speech_lengths"};
+        static constexpr std::array<const char*, 2> output_names = {"logits", "token_num"};
 
         log_debug("Running ONNX inference...");
 
@@ -294,10 +352,11 @@ private:
                 Ort::RunOptions{nullptr},
                 input_names.data(),
                 input_tensors.data(),
-                2,
+                input_names.size(),
                 output_names.data(),
                 output_names.size()
             );
+            const auto after_run = clock::now();
 
             log_debug("Inference complete, processing outputs...");
 
@@ -337,6 +396,17 @@ private:
             result.text = text;
             result.confidence = 0.9f;
             result.language = language_;
+            const auto infer_end = clock::now();
+            const auto pack_ms = std::chrono::duration<double, std::milli>(after_pack - infer_start).count();
+            const auto run_ms = std::chrono::duration<double, std::milli>(after_run - after_pack).count();
+            const auto decode_ms = std::chrono::duration<double, std::milli>(infer_end - after_run).count();
+            const auto total_ms = pack_ms + run_ms + decode_ms;
+            infer_pack_ms_ += pack_ms;
+            infer_run_ms_ += run_ms;
+            infer_decode_ms_ += decode_ms;
+            infer_total_ms_ += total_ms;
+            ++infer_calls_;
+            infer_latency_ms_.push_back(total_ms);
 
         } catch (const Ort::Exception& e) {
             log_error("ONNX Runtime error: {}", e.what());
@@ -357,6 +427,14 @@ private:
     Ort::MemoryInfo memory_info_{nullptr};
 
     std::unordered_map<int, std::string> id_to_token_;
+    std::vector<float> input_buffer_;
+    std::optional<AsrResult> last_result_cache_;
+    std::vector<double> infer_latency_ms_;
+    double infer_total_ms_ = 0.0;
+    double infer_pack_ms_ = 0.0;
+    double infer_run_ms_ = 0.0;
+    double infer_decode_ms_ = 0.0;
+    std::size_t infer_calls_ = 0;
     int min_new_feature_frames_ = 8;
     std::uint64_t last_feature_version_ = 0;
     int last_feature_count_ = 0;

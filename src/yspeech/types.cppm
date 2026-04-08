@@ -188,7 +188,11 @@ export struct OperatorTiming {
     double max_time_ms = 0.0;
     double avg_time_ms = 0.0;
     std::size_t call_count = 0;
+    std::size_t effective_call_count = 0;
+    double effective_total_time_ms = 0.0;
+    double effective_avg_time_ms = 0.0;
     std::vector<double> recent_times_ms;
+    std::vector<double> effective_recent_times_ms;
     
     void record(double time_ms, std::size_t history_size = 100) {
         total_time_ms += time_ms;
@@ -201,6 +205,22 @@ export struct OperatorTiming {
             recent_times_ms.push_back(time_ms);
             if (recent_times_ms.size() > history_size) {
                 recent_times_ms.erase(recent_times_ms.begin());
+            }
+        }
+    }
+
+    void record_effective_call() {
+        effective_call_count++;
+    }
+
+    void record_effective_sample(double time_ms, std::size_t history_size = 100) {
+        effective_call_count++;
+        effective_total_time_ms += time_ms;
+        effective_avg_time_ms = effective_total_time_ms / static_cast<double>(effective_call_count);
+        if (history_size > 0) {
+            effective_recent_times_ms.push_back(time_ms);
+            if (effective_recent_times_ms.size() > history_size) {
+                effective_recent_times_ms.erase(effective_recent_times_ms.begin());
             }
         }
     }
@@ -235,6 +255,29 @@ export struct ProcessingStats {
     std::size_t asr_results_generated = 0;
     
     double total_processing_time_ms = 0.0;
+    double engine_init_time_ms = 0.0;
+    double operator_total_time_ms = 0.0;
+    double non_operator_time_ms = 0.0;
+    double operator_time_percent = 0.0;
+    double non_operator_time_percent = 0.0;
+    double time_to_first_chunk_ms = 0.0;
+    double drain_after_eof_ms = 0.0;
+    double stop_overhead_ms = 0.0;
+    double stop_resource_monitor_ms = 0.0;
+    double stop_source_join_ms = 0.0;
+    double stop_finalize_stream_ms = 0.0;
+    double stop_drain_events_ms = 0.0;
+    double stop_event_join_ms = 0.0;
+    double eof_detected_at_ms = 0.0;
+    double eof_status_emitted_at_ms = 0.0;
+    double eof_status_delay_ms = 0.0;
+    std::size_t event_dispatch_calls = 0;
+    double event_dispatch_overhead_ms = 0.0;
+    double event_queue_push_time_ms = 0.0;
+    double event_callback_time_ms = 0.0;
+    double event_dispatch_avg_ms = 0.0;
+    double event_queue_push_avg_ms = 0.0;
+    double event_callback_avg_ms = 0.0;
     double audio_duration_ms = 0.0;
     double rtf = 0.0;
     
@@ -249,34 +292,104 @@ export struct ProcessingStats {
         }
         operator_timings[op_id].record(time_ms, history_size);
     }
+
+    void record_operator_effective_call(const std::string& op_id) {
+        if (operator_timings.find(op_id) == operator_timings.end()) {
+            operator_timings[op_id] = OperatorTiming{.op_id = op_id};
+        }
+        operator_timings[op_id].record_effective_call();
+    }
+
+    void record_operator_effective_sample(const std::string& op_id, double time_ms, std::size_t history_size = 100) {
+        if (operator_timings.find(op_id) == operator_timings.end()) {
+            operator_timings[op_id] = OperatorTiming{.op_id = op_id};
+        }
+        operator_timings[op_id].record_effective_sample(time_ms, history_size);
+    }
     
     std::string to_string() const {
-        std::string result = std::format(
-            "=== Performance Summary ===\n"
-            "Chunks: {}, Segments: {}, Results: {}\n"
-            "Processing Time: {:.2f}ms, Audio Duration: {:.2f}ms, RTF: {:.3f}\n"
-            "Peak Memory: {:.2f}MB, Avg CPU: {:.1f}%",
-            audio_chunks_processed,
-            speech_segments_detected,
-            asr_results_generated,
-            total_processing_time_ms,
-            audio_duration_ms,
-            rtf,
-            peak_memory_mb,
-            avg_cpu_percent
-        );
+        std::string result = "=== Performance Summary ===\n";
+        result += "┌───────────────────────────┬────────────────┐\n";
+        result += std::format("│ {:<25} │ {:>14} │\n", "Metric", "Value");
+        result += "├───────────────────────────┼────────────────┤\n";
+        result += std::format("│ {:<25} │ {:>14} │\n", "Chunks", audio_chunks_processed);
+        result += std::format("│ {:<25} │ {:>14} │\n", "Segments", speech_segments_detected);
+        result += std::format("│ {:<25} │ {:>14} │\n", "Results", asr_results_generated);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Engine Init Time", engine_init_time_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Processing Time", total_processing_time_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Operator Time", operator_total_time_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Non-Operator Time", non_operator_time_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} %  │\n", "Operator Share", operator_time_percent);
+        result += std::format("│ {:<25} │ {:>11.2f} %  │\n", "Non-Operator Share", non_operator_time_percent);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Time To First Chunk", time_to_first_chunk_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Drain After EOF", drain_after_eof_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Stop Overhead", stop_overhead_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Stop.Monitor", stop_resource_monitor_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Stop.SourceJoin", stop_source_join_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Stop.Finalize", stop_finalize_stream_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Stop.DrainEvents", stop_drain_events_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Stop.EventJoin", stop_event_join_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "EOF Detected At", eof_detected_at_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "EOF Status At", eof_status_emitted_at_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "EOF Status Delay", eof_status_delay_ms);
+        result += std::format("│ {:<25} │ {:>14} │\n", "Event Dispatch Calls", event_dispatch_calls);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Event Dispatch Time", event_dispatch_overhead_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Event Queue Push Time", event_queue_push_time_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Event Callback Time", event_callback_time_ms);
+        result += std::format("│ {:<25} │ {:>11.4f} ms │\n", "Event Dispatch Avg", event_dispatch_avg_ms);
+        result += std::format("│ {:<25} │ {:>11.4f} ms │\n", "Event Queue Push Avg", event_queue_push_avg_ms);
+        result += std::format("│ {:<25} │ {:>11.4f} ms │\n", "Event Callback Avg", event_callback_avg_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Audio Duration", audio_duration_ms);
+        result += std::format("│ {:<25} │ {:>14.3f} │\n", "RTF", rtf);
+        result += std::format("│ {:<25} │ {:>11.2f} MB │\n", "Peak Memory", peak_memory_mb);
+        result += std::format("│ {:<25} │ {:>12.1f} % │\n", "Avg CPU", avg_cpu_percent);
+        result += "└───────────────────────────┴────────────────┘\n";
         
         if (!operator_timings.empty()) {
-            result += "\n\nOperator Performance:\n";
+            result += "\nOperator Performance:\n";
+            result += "┌─────────────────┬──────────┬──────────┬───────┬───────┬──────────┬──────────┬──────────┬─────────┐\n";
+            result += "│ Operator        │ Total    │ Avg      │ Calls │ Exec  │ P50      │ P95      │ P99      │ % Total │\n";
+            result += "├─────────────────┼──────────┼──────────┼───────┼───────┼──────────┼──────────┼──────────┼─────────┤\n";
+            
             for (const auto& [id, timing] : operator_timings) {
-                result += std::format("  {}: total={:.2f}ms, avg={:.2f}ms, calls={}",
-                    id, timing.total_time_ms, timing.avg_time_ms, timing.call_count);
-                if (!timing.recent_times_ms.empty()) {
-                    result += std::format(", p50={:.2f}ms, p95={:.2f}ms, p99={:.2f}ms",
-                        timing.p50(), timing.p95(), timing.p99());
+                double percent = (total_processing_time_ms > 0.0) 
+                    ? (timing.total_time_ms / total_processing_time_ms * 100.0) 
+                    : 0.0;
+                
+                const bool use_effective_percentiles = !timing.effective_recent_times_ms.empty();
+                const double p50 = use_effective_percentiles ? [&]{
+                    auto sorted = timing.effective_recent_times_ms;
+                    std::sort(sorted.begin(), sorted.end());
+                    return sorted[sorted.size() / 2];
+                }() : timing.p50();
+                const double p95 = use_effective_percentiles ? [&]{
+                    auto sorted = timing.effective_recent_times_ms;
+                    std::sort(sorted.begin(), sorted.end());
+                    std::size_t idx = static_cast<std::size_t>(sorted.size() * 0.95);
+                    return sorted[std::min(idx, sorted.size() - 1)];
+                }() : timing.p95();
+                const double p99 = use_effective_percentiles ? [&]{
+                    auto sorted = timing.effective_recent_times_ms;
+                    std::sort(sorted.begin(), sorted.end());
+                    std::size_t idx = static_cast<std::size_t>(sorted.size() * 0.99);
+                    return sorted[std::min(idx, sorted.size() - 1)];
+                }() : timing.p99();
+                const double display_avg_ms = timing.effective_call_count > 0
+                    ? timing.effective_avg_time_ms
+                    : timing.avg_time_ms;
+
+                if (!timing.recent_times_ms.empty() || !timing.effective_recent_times_ms.empty()) {
+                    result += std::format("│ {:<15} │ {:>6.2f}ms │ {:>6.2f}ms │ {:>5} │ {:>5} │ {:>6.2f}ms │ {:>6.2f}ms │ {:>6.2f}ms │ {:>6.2f}% │\n",
+                        id, timing.total_time_ms, display_avg_ms, timing.call_count, timing.effective_call_count,
+                        p50, p95, p99, percent);
+                } else {
+                    result += std::format("│ {:<15} │ {:>6.2f}ms │ {:>6.2f}ms │ {:>5} │ {:>5} │ {:>6} │ {:>6} │ {:>6} │ {:>6.2f}% │\n",
+                        id, timing.total_time_ms, timing.avg_time_ms, timing.call_count, timing.effective_call_count,
+                        "-", "-", "-", percent);
                 }
-                result += "\n";
             }
+            
+            result += "└─────────────────┴──────────┴──────────┴───────┴───────┴──────────┴──────────┴──────────┴─────────┘\n";
         }
         
         return result;

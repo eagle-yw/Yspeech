@@ -30,6 +30,11 @@ public:
         if (config.contains("output_key")) {
             output_key_ = config["output_key"].get<std::string>();
         }
+        if (config.contains("__op_id")) {
+            operator_id_ = config["__op_id"].get<std::string>();
+        } else {
+            operator_id_ = output_key_;
+        }
         reader_key_ = output_key_ + "_reader";
         if (config.contains("reader_key")) {
             reader_key_ = config["reader_key"].get<std::string>();
@@ -67,6 +72,7 @@ protected:
     std::string input_frame_key_ = "audio_frames";
     std::string reader_key_ = "asr_reader";
     std::string output_key_ = "asr";
+    std::string operator_id_ = "asr";
     int sample_rate_ = 16000;
     std::string language_ = "zh";
     bool use_gpu_ = false;

@@ -72,6 +72,18 @@ private:
     ProcessingStats stats_;
     std::chrono::steady_clock::time_point stats_start_time_{};
     std::chrono::steady_clock::time_point last_performance_emit_{};
+    std::chrono::steady_clock::time_point first_chunk_time_{};
+    std::chrono::steady_clock::time_point input_eof_time_{};
+    std::chrono::steady_clock::time_point input_eof_status_time_{};
+    std::atomic<bool> first_chunk_seen_{false};
+    std::atomic<bool> input_eof_seen_{false};
+    std::atomic<bool> input_eof_status_seen_{false};
+    double engine_init_time_ms_ = 0.0;
+    double stop_resource_monitor_ms_ = 0.0;
+    double stop_source_join_ms_ = 0.0;
+    double stop_finalize_stream_ms_ = 0.0;
+    double stop_drain_events_ms_ = 0.0;
+    double stop_event_join_ms_ = 0.0;
     std::atomic<std::size_t> total_audio_samples_{0};
     std::thread event_thread_;
     std::thread source_thread_;
@@ -92,6 +104,7 @@ private:
     std::int64_t next_push_pts_ms_ = 0;
     std::atomic<bool> has_input_{false};
     std::atomic<bool> stream_finalized_{false};
+    std::atomic<bool> stream_drained_emitted_{false};
 
     void load_config();
     void init_components();
@@ -106,19 +119,28 @@ private:
     void emit_performance_if_due();
     void finalize_stats();
     void merge_operator_timings(ProcessingStats& target) const;
+    void update_time_breakdown(ProcessingStats& target, std::chrono::steady_clock::time_point now) const;
+    void signal_event_work();
+    void emit_stream_drained_once();
     ProcessingStats build_live_stats_snapshot() const;
     void finalize_stream_if_needed();
 };
 
 EngineRuntime::EngineRuntime(const std::string& config_path)
     : config_path_(config_path) {
+    auto init_start = std::chrono::steady_clock::now();
     load_config();
     init_components();
+    engine_init_time_ms_ = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - init_start).count();
 }
 
 EngineRuntime::EngineRuntime(const nlohmann::json& config)
     : config_(config) {
+    auto init_start = std::chrono::steady_clock::now();
     init_components();
+    engine_init_time_ms_ = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - init_start).count();
 }
 
 EngineRuntime::~EngineRuntime() {
@@ -136,6 +158,18 @@ void EngineRuntime::start() {
     stream_finalized_.store(false, std::memory_order_release);
     stats_start_time_ = std::chrono::steady_clock::now();
     last_performance_emit_ = stats_start_time_;
+    first_chunk_seen_.store(false, std::memory_order_release);
+    input_eof_seen_.store(false, std::memory_order_release);
+    input_eof_status_seen_.store(false, std::memory_order_release);
+    first_chunk_time_ = {};
+    input_eof_time_ = {};
+    input_eof_status_time_ = {};
+    stop_resource_monitor_ms_ = 0.0;
+    stop_source_join_ms_ = 0.0;
+    stop_finalize_stream_ms_ = 0.0;
+    stop_drain_events_ms_ = 0.0;
+    stop_event_join_ms_ = 0.0;
+    stream_drained_emitted_.store(false, std::memory_order_release);
 
     context_->set("streaming", !offline_mode_);
     emit_status("started");
@@ -145,7 +179,7 @@ void EngineRuntime::start() {
     event_thread_ = std::thread([this]() {
         while (running_) {
             std::unique_lock<std::mutex> lock(event_mutex_);
-            event_cv_.wait_for(lock, std::chrono::milliseconds(50), [this]() {
+            event_cv_.wait_for(lock, std::chrono::milliseconds(10), [this]() {
                 return !running_ || has_pending_event_work_;
             });
 
@@ -175,12 +209,29 @@ void EngineRuntime::start() {
 
                 AudioFramePtr frame;
                 if (!active_frame_source_->next(frame) || !frame) {
-                    finalize_stream_if_needed();
                     emit_status("input_eof");
+                    signal_event_work();
+                    finalize_stream_if_needed();
+                    drain_asr_events();
+                    drain_vad_events();
+                    emit_stream_drained_once();
+                    signal_event_work();
                     break;
                 }
 
+                if (frame->eos) {
+                    emit_status("input_eof");
+                    signal_event_work();
+                }
                 store_frame(frame);
+                if (frame->eos) {
+                    finalize_stream_if_needed();
+                    drain_asr_events();
+                    drain_vad_events();
+                    emit_stream_drained_once();
+                    signal_event_work();
+                    break;
+                }
             }
             return;
         }
@@ -192,12 +243,28 @@ void EngineRuntime::start() {
 
             AudioFramePtr frame;
             if (!active_frame_source_->next(frame) || !frame) {
-                finalize_stream_if_needed();
                 emit_status("input_eof");
+                signal_event_work();
+                finalize_stream_if_needed();
+                drain_asr_events();
+                drain_vad_events();
+                emit_stream_drained_once();
+                signal_event_work();
                 break;
             }
 
+            if (frame->eos) {
+                emit_status("input_eof");
+                signal_event_work();
+            }
             ingest_frame(frame);
+            if (frame->eos) {
+                drain_asr_events();
+                drain_vad_events();
+                emit_stream_drained_once();
+                signal_event_work();
+                break;
+            }
         }
     });
 
@@ -222,8 +289,8 @@ void EngineRuntime::finish() {
         finalize_stream_if_needed();
         drain_asr_events();
         drain_vad_events();
-        has_pending_event_work_ = true;
-        event_cv_.notify_one();
+        emit_stream_drained_once();
+        signal_event_work();
     }
 }
 
@@ -233,25 +300,42 @@ void EngineRuntime::stop() {
     }
 
     running_ = false;
+    event_cv_.notify_all();
 
+    auto phase_start = std::chrono::steady_clock::now();
     ResourceMonitor::stop_monitoring();
+    stop_resource_monitor_ms_ = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - phase_start).count();
 
     if (active_frame_source_) {
         active_frame_source_->stop();
     }
 
+    phase_start = std::chrono::steady_clock::now();
     if (source_thread_.joinable()) {
         source_thread_.join();
     }
+    stop_source_join_ms_ = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - phase_start).count();
 
+    phase_start = std::chrono::steady_clock::now();
     finalize_stream_if_needed();
+    stop_finalize_stream_ms_ = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - phase_start).count();
+
+    phase_start = std::chrono::steady_clock::now();
     drain_asr_events();
     drain_vad_events();
+    emit_stream_drained_once();
+    stop_drain_events_ms_ = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - phase_start).count();
 
-    event_cv_.notify_all();
+    phase_start = std::chrono::steady_clock::now();
     if (event_thread_.joinable()) {
         event_thread_.join();
     }
+    stop_event_join_ms_ = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - phase_start).count();
 
     finalize_stats();
     if (performance_callback_) {
@@ -494,6 +578,9 @@ void EngineRuntime::store_frame(AudioFramePtr frame) {
     has_input_.store(true, std::memory_order_release);
 
     if (!frame->samples.empty()) {
+        if (!first_chunk_seen_.exchange(true, std::memory_order_acq_rel)) {
+            first_chunk_time_ = std::chrono::steady_clock::now();
+        }
         total_audio_samples_ += frame->samples_per_channel();
     }
 
@@ -501,6 +588,9 @@ void EngineRuntime::store_frame(AudioFramePtr frame) {
 
     if (frame->eos) {
         context_->set("global_eof", true);
+        if (!input_eof_seen_.exchange(true, std::memory_order_acq_rel)) {
+            input_eof_time_ = std::chrono::steady_clock::now();
+        }
     }
 
 }
@@ -517,8 +607,7 @@ void EngineRuntime::ingest_frame(AudioFramePtr frame) {
         pipeline_manager_->run_stream(*context_, *stream_store_, true);
     }
 
-    has_pending_event_work_ = true;
-    event_cv_.notify_one();
+    signal_event_work();
 }
 
 void EngineRuntime::finalize_stream_if_needed() {
@@ -533,10 +622,14 @@ void EngineRuntime::finalize_stream_if_needed() {
     }
 
     context_->set("global_eof", true);
+    if (!input_eof_seen_.exchange(true, std::memory_order_acq_rel)) {
+        input_eof_time_ = std::chrono::steady_clock::now();
+    }
     if (offline_mode_) {
         pipeline_manager_->run_stream(*context_, *stream_store_, false);
     }
     pipeline_manager_->run_stream(*context_, *stream_store_, true);
+    signal_event_work();
 }
 
 void EngineRuntime::drain_asr_events() {
@@ -600,6 +693,11 @@ void EngineRuntime::drain_vad_events() {
 }
 
 void EngineRuntime::emit_status(const std::string& status) {
+    if (status == "input_eof") {
+        if (!input_eof_status_seen_.exchange(true, std::memory_order_acq_rel)) {
+            input_eof_status_time_ = std::chrono::steady_clock::now();
+        }
+    }
     if (status_callback_) {
         status_callback_(status);
     }
@@ -616,6 +714,7 @@ ProcessingStats EngineRuntime::build_live_stats_snapshot() const {
     auto now = std::chrono::steady_clock::now();
     snapshot.total_processing_time_ms = std::chrono::duration<double, std::milli>(
         now - stats_start_time_).count();
+    snapshot.engine_init_time_ms = engine_init_time_ms_;
     snapshot.audio_duration_ms =
         static_cast<double>(total_audio_samples_) / static_cast<double>(std::max(frame_config_.sample_rate, 1)) * 1000.0;
     if (snapshot.audio_duration_ms > 0.0) {
@@ -626,6 +725,7 @@ ProcessingStats EngineRuntime::build_live_stats_snapshot() const {
     snapshot.peak_memory_mb = static_cast<double>(resource.peak_memory_mb);
     snapshot.avg_cpu_percent = resource.cpu_percent;
     merge_operator_timings(snapshot);
+    update_time_breakdown(snapshot, now);
     return snapshot;
 }
 
@@ -651,6 +751,18 @@ void EngineRuntime::finalize_stats() {
     auto end_time = std::chrono::steady_clock::now();
     stats_.total_processing_time_ms = std::chrono::duration<double, std::milli>(
         end_time - stats_start_time_).count();
+    stats_.engine_init_time_ms = engine_init_time_ms_;
+    stats_.stop_resource_monitor_ms = stop_resource_monitor_ms_;
+    stats_.stop_source_join_ms = stop_source_join_ms_;
+    stats_.stop_finalize_stream_ms = stop_finalize_stream_ms_;
+    stats_.stop_drain_events_ms = stop_drain_events_ms_;
+    stats_.stop_event_join_ms = stop_event_join_ms_;
+    stats_.stop_overhead_ms =
+        stop_resource_monitor_ms_ +
+        stop_source_join_ms_ +
+        stop_finalize_stream_ms_ +
+        stop_drain_events_ms_ +
+        stop_event_join_ms_;
     stats_.audio_duration_ms =
         static_cast<double>(total_audio_samples_) / static_cast<double>(std::max(frame_config_.sample_rate, 1)) * 1000.0;
     if (stats_.audio_duration_ms > 0.0) {
@@ -661,6 +773,7 @@ void EngineRuntime::finalize_stats() {
     stats_.peak_memory_mb = static_cast<double>(resource.peak_memory_mb);
     stats_.avg_cpu_percent = resource.cpu_percent;
     merge_operator_timings(stats_);
+    update_time_breakdown(stats_, end_time);
 }
 
 void EngineRuntime::merge_operator_timings(ProcessingStats& target) const {
@@ -672,6 +785,68 @@ void EngineRuntime::merge_operator_timings(ProcessingStats& target) const {
         if (target.operator_timings.find(op_id) == target.operator_timings.end()) {
             target.operator_timings[op_id] = timing;
         }
+    }
+}
+
+void EngineRuntime::signal_event_work() {
+    if (!has_pending_event_work_.exchange(true, std::memory_order_acq_rel)) {
+        event_cv_.notify_one();
+    }
+}
+
+void EngineRuntime::emit_stream_drained_once() {
+    if (!stream_drained_emitted_.exchange(true, std::memory_order_acq_rel)) {
+        emit_status("stream_drained");
+    }
+}
+
+void EngineRuntime::update_time_breakdown(ProcessingStats& target, std::chrono::steady_clock::time_point now) const {
+    double operator_total_ms = 0.0;
+    for (const auto& [op_id, timing] : target.operator_timings) {
+        (void)op_id;
+        operator_total_ms += timing.total_time_ms;
+    }
+
+    target.operator_total_time_ms = operator_total_ms;
+    target.non_operator_time_ms = std::max(0.0, target.total_processing_time_ms - operator_total_ms);
+
+    if (target.total_processing_time_ms > 0.0) {
+        target.operator_time_percent = operator_total_ms / target.total_processing_time_ms * 100.0;
+        target.non_operator_time_percent = target.non_operator_time_ms / target.total_processing_time_ms * 100.0;
+    } else {
+        target.operator_time_percent = 0.0;
+        target.non_operator_time_percent = 0.0;
+    }
+
+    if (first_chunk_seen_.load(std::memory_order_acquire)) {
+        target.time_to_first_chunk_ms = std::max(
+            0.0, std::chrono::duration<double, std::milli>(first_chunk_time_ - stats_start_time_).count());
+    } else {
+        target.time_to_first_chunk_ms = target.total_processing_time_ms;
+    }
+
+    if (input_eof_seen_.load(std::memory_order_acquire)) {
+        target.drain_after_eof_ms = std::max(
+            0.0, std::chrono::duration<double, std::milli>(now - input_eof_time_).count());
+        target.eof_detected_at_ms = std::max(
+            0.0, std::chrono::duration<double, std::milli>(input_eof_time_ - stats_start_time_).count());
+    } else {
+        target.drain_after_eof_ms = 0.0;
+        target.eof_detected_at_ms = 0.0;
+    }
+
+    if (input_eof_status_seen_.load(std::memory_order_acquire)) {
+        target.eof_status_emitted_at_ms = std::max(
+            0.0, std::chrono::duration<double, std::milli>(input_eof_status_time_ - stats_start_time_).count());
+        if (input_eof_seen_.load(std::memory_order_acquire)) {
+            target.eof_status_delay_ms = std::max(
+                0.0, std::chrono::duration<double, std::milli>(input_eof_status_time_ - input_eof_time_).count());
+        } else {
+            target.eof_status_delay_ms = 0.0;
+        }
+    } else {
+        target.eof_status_emitted_at_ms = 0.0;
+        target.eof_status_delay_ms = 0.0;
     }
 }
 

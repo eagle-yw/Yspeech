@@ -20,6 +20,10 @@ int main(int argc, char* argv[]) {
         options.audio_path = audio_file;
         options.playback_rate = 0.0;
         yspeech::Engine engine(config_file, options);
+        std::mutex status_mutex;
+        std::condition_variable status_cv;
+        bool input_eof_seen = false;
+        bool stream_drained_seen = false;
 
         yspeech::AsrResult result;
         engine.on_event([&](const yspeech::EngineEvent& event) {
@@ -32,13 +36,37 @@ int main(int argc, char* argv[]) {
             }
             result = *event.asr;
         });
+        engine.on_status([&](const std::string& status) {
+            if (status == "input_eof") {
+                {
+                    std::lock_guard lock(status_mutex);
+                    input_eof_seen = true;
+                }
+                status_cv.notify_all();
+                return;
+            }
+            if (status == "stream_drained") {
+                {
+                    std::lock_guard lock(status_mutex);
+                    stream_drained_seen = true;
+                }
+                status_cv.notify_all();
+            }
+        });
 
         engine.start();
         engine.finish();
-        while (!engine.input_eof_reached()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        {
+            std::unique_lock lock(status_mutex);
+            const bool drained = status_cv.wait_for(lock, std::chrono::seconds(30), [&]() {
+                return stream_drained_seen;
+            });
+            if (!drained) {
+                status_cv.wait_for(lock, std::chrono::seconds(5), [&]() {
+                    return input_eof_seen || engine.input_eof_reached();
+                });
+            }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
         engine.stop();
         
         auto end = std::chrono::steady_clock::now();
