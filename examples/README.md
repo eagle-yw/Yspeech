@@ -45,14 +45,16 @@ cmake --build build
 ```bash
 ./build/examples/streaming_demo \
     examples/configs/streaming_paraformer_asr.json \
-    model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+    model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+    1.0
 ```
 
 **SenseVoice (多语言):**
 ```bash
 ./build/examples/streaming_demo \
     examples/configs/streaming_sensevoice_asr.json \
-    model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/test_wavs/zh.wav
+    model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/test_wavs/zh.wav \
+    1.0
 ```
 
 **输出示例:**
@@ -63,7 +65,7 @@ cmake --build build
 音频文件: model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
 
 开始流式识别...
-通过统一 FrameSource 编排推送 10ms AudioFrame...
+通过 Engine 内置 source 编排推送 10ms AudioFrame...
 
 [VAD] 语音开始: 0ms
 [实时转写 #1] 对我做了介绍啊
@@ -124,13 +126,12 @@ cmake --build build --target simple_transcribe
 ```cpp
 import std;
 import yspeech.engine;
-import yspeech.frame_source;
 
 int main(int argc, char* argv[]) {
-    yspeech::Engine engine(argv[1]);
-    auto file_source = std::make_shared<yspeech::FileSource>(argv[2], "offline", 1.0, false);
-    auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(file_source);
-    engine.set_frame_source(pipeline_source);
+    yspeech::EngineConfigOptions options;
+    options.audio_path = argv[2];
+    options.playback_rate = 0.0;
+    yspeech::Engine engine(argv[1], options);
     yspeech::AsrResult result;
     engine.on_event([&](const yspeech::EngineEvent& event) {
         if (event.asr && event.kind == yspeech::EngineEventKind::ResultStreamFinal) {
@@ -159,19 +160,18 @@ cmake --build build --target streaming_demo
 
 **运行:**
 ```bash
-./build/examples/streaming_demo <配置文件> <音频文件>
+./build/examples/streaming_demo <配置文件> <音频文件> [播放倍率]
 ```
 
 **代码示例:**
 ```cpp
 import std;
 import yspeech.engine;
-import yspeech.frame_source;
 
-yspeech::Engine engine("config.json");
-auto file_source = std::make_shared<yspeech::FileSource>("audio.wav");
-auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(file_source);
-engine.set_frame_source(pipeline_source);
+yspeech::EngineConfigOptions options;
+options.audio_path = "audio.wav";
+options.playback_rate = 2.0;
+yspeech::Engine engine("config.json", options);
 
 engine.on_event([](const yspeech::EngineEvent& event) {
     if (event.asr && event.kind == yspeech::EngineEventKind::ResultPartial) {
@@ -189,6 +189,8 @@ while (!engine.input_eof_reached()) {
 std::this_thread::sleep_for(std::chrono::seconds(2));
 engine.stop();
 ```
+
+> 覆盖优先级：`EngineConfigOptions` > 配置文件同名字段（例如 `source.path`、`source.playback_rate`、`log_level`）。
 
 ### 3. transcribe_tool.cpp
 功能完整的转录工具，支持多种输出格式和选项。
@@ -260,10 +262,10 @@ cmake --build build --target transcribe_tool
 
 ```cpp
 // 统一 Engine 接口（离线）
-yspeech::Engine engine("config.json");
-auto file_source = std::make_shared<yspeech::FileSource>("audio.wav", "offline", 1.0, false);
-auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(file_source);
-engine.set_frame_source(pipeline_source);
+yspeech::EngineConfigOptions options;
+options.audio_path = "audio.wav";
+options.playback_rate = 0.0;
+yspeech::Engine engine("config.json", options);
 
 engine.start();
 engine.finish();

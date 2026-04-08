@@ -120,12 +120,10 @@ export class FileSource : public IFrameSource {
 public:
     explicit FileSource(const std::string& path,
                         std::string stream_id = "file",
-                        double playback_rate = 1.0,
-                        bool simulate_realtime = true)
+                        double playback_rate = 1.0)
         : stream_(path),
           stream_id_(std::move(stream_id)),
-          playback_rate_(playback_rate > 0.0 ? playback_rate : 1.0),
-          simulate_realtime_(simulate_realtime) {
+          playback_rate_(playback_rate) {
         sample_rate_ = detail::to_int_sample_rate(stream_.sampleRate());
         channels_ = std::max(stream_.micNum(), 1);
         samples_per_frame_per_channel_ = static_cast<std::size_t>(sample_rate_) / 100;
@@ -184,16 +182,11 @@ public:
     }
 
     void set_playback_rate(double playback_rate) {
-        playback_rate_ = playback_rate > 0.0 ? playback_rate : 1.0;
+        playback_rate_ = playback_rate;
     }
-
-    void set_simulate_realtime(bool enabled) {
-        simulate_realtime_ = enabled;
-    }
-
 private:
     void pace_if_needed() {
-        if (!simulate_realtime_) {
+        if (playback_rate_ <= 0.0) {
             return;
         }
 
@@ -227,7 +220,6 @@ private:
     std::size_t bytes_per_frame_ = 320;
     Bytes frame_bytes_;
     double playback_rate_ = 1.0;
-    bool simulate_realtime_ = true;
     bool playback_started_ = false;
     std::chrono::steady_clock::time_point playback_start_time_{};
     bool stopped_ = false;

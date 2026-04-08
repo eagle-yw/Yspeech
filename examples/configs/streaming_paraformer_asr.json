@@ -4,7 +4,9 @@
   "log_level": "info",
   "mode": "streaming",
   "source": {
-    "type": "microphone"
+    "type": "file",
+    "path": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav",
+    "playback_rate": 4.0
   },
   "frame": {
     "sample_rate": 16000,
@@ -92,7 +94,9 @@
             "language": "zh"
           },
           "parallel": false,
-          "depends_on": ["fbank"]
+          "depends_on": [
+            "fbank"
+          ]
         }
       ]
     }

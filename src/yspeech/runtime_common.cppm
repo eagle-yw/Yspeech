@@ -62,6 +62,32 @@ export inline auto load_runtime_config(const std::string& config_path) -> nlohma
     }
 }
 
+export inline void apply_file_source_override(
+    nlohmann::json& config,
+    const std::string& audio_path,
+    std::optional<double> playback_rate = std::nullopt
+) {
+    if (!config.contains("source") || !config["source"].is_object()) {
+        config["source"] = nlohmann::json::object();
+    }
+    auto& source = config["source"];
+    source["type"] = "file";
+    source["path"] = audio_path;
+    if (playback_rate.has_value()) {
+        source["playback_rate"] = *playback_rate;
+    }
+}
+
+export inline auto load_runtime_config_with_file_source(
+    const std::string& config_path,
+    const std::string& audio_path,
+    std::optional<double> playback_rate = std::nullopt
+) -> nlohmann::json {
+    auto config = load_runtime_config(config_path);
+    apply_file_source_override(config, audio_path, playback_rate);
+    return config;
+}
+
 export inline auto build_runtime_components(const nlohmann::json& config) -> RuntimeComponents {
     RuntimeComponents components;
     components.pipeline_config = PipelineConfig::from_json(config);

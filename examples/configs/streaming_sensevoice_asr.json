@@ -4,7 +4,7 @@
   "log_level": "info",
   "mode": "streaming",
   "source": {
-    "type": "microphone"
+    "type": "file"
   },
   "frame": {
     "sample_rate": 16000,

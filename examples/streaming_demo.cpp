@@ -1,10 +1,7 @@
 import std;
 import yspeech.engine;
 import yspeech.log;
-import yspeech.runtime_common;
 import yspeech.types;
-import yspeech.audio.file;
-import yspeech.frame_source;
 
 int main(int argc, char* argv[]) {
     std::print("=== Yspeech 流式 ASR 实际音频测试 ===\n\n");
@@ -23,12 +20,18 @@ int main(int argc, char* argv[]) {
     std::print("音频文件: {}\n\n", audio_file);
     
     try {
-        auto runtime_config = yspeech::load_runtime_config(config_file);
-        runtime_config["log_level"] = "warn";
-        yspeech::Engine asr(runtime_config);
-        auto file_source = std::make_shared<yspeech::FileSource>(audio_file);
-        auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(file_source);
-        asr.set_frame_source(pipeline_source);
+        yspeech::EngineConfigOptions options;
+        options.log_level = "warn";
+        if (argc > 2) {
+            options.audio_path = audio_file;
+        }
+        if (argc > 3) {
+            options.playback_rate = std::stod(argv[3]);
+        }
+
+        yspeech::Engine asr(config_file, options);
+        std::print("source.path: {}\n", options.audio_path.value_or("<none>"));
+        std::print("source.playback_rate: {}\n\n", options.playback_rate.value_or(1.0));
         
         std::atomic<int> result_count{0};
         std::mutex transcript_mutex;
@@ -182,7 +185,7 @@ int main(int argc, char* argv[]) {
         asr.start();
         asr.finish();
 
-        std::print("通过统一 FrameSource 编排推送 10ms AudioFrame...\n\n");
+        std::print("通过 Engine 内置 source 编排推送 10ms AudioFrame...\n\n");
         while (!asr.input_eof_reached()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }

@@ -121,6 +121,7 @@ processor.on_vad([](bool is_speech, int64_t start_ms, int64_t end_ms) {
 |------|------|------|
 | `type` | string | `file` 或 `microphone` 或 `stream` |
 | `path` | string | 文件路径（type=file 时） |
+| `playback_rate` | number | 文件播放倍率（type=file 时），`1`=实时，`2`=2 倍速 |
 | `device` | string | 采集设备名或 ID（type=microphone 时，可选） |
 
 ### frame 字段

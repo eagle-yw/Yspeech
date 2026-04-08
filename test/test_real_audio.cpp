@@ -177,7 +177,7 @@ TEST_F(TestRealAudio, FileSourceFrames) {
     
     const auto& test_file = all_files[0];
 
-    auto file_source = yspeech::FileSource(test_file.string(), "test_file", 1.0, false);
+    auto file_source = yspeech::FileSource(test_file.string(), "test_file", 0.0);
 
     yspeech::AudioFramePtr frame;
     int frame_count = 0;

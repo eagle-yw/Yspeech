@@ -44,11 +44,6 @@ public:
     void build() {
         init_aspects();
         
-        size_t concurrency = config_.max_concurrency();
-        executor_ = std::make_unique<tf::Executor>(concurrency);
-        log_debug("PipelineStage '{}' using executor with {} threads", 
-                 config_.id().empty() ? "unnamed" : config_.id(), concurrency);
-        
         std::unordered_map<std::string, tf::Task> tasks;
         
         for (const auto& op_config : config_.ops()) {
@@ -142,7 +137,6 @@ public:
         }
         operators_.clear();
         taskflow_.clear();
-        executor_.reset();
         error_handling_configs_.clear();
         build_errors_.clear();
     }
@@ -160,7 +154,7 @@ private:
     const PipelineConfig& parent_config_;
     std::unordered_map<std::string, OperatorIface> operators_;
     tf::Taskflow taskflow_;
-    std::unique_ptr<tf::Executor> executor_;
+    tf::Executor executor_;
     std::atomic<Context*> ctx_{nullptr};
     std::atomic<StreamStore*> stream_store_{nullptr};
     std::atomic<bool> flush_mode_{false};
@@ -177,7 +171,7 @@ private:
         ctx_.store(&ctx, std::memory_order_release);
         stream_store_.store(store, std::memory_order_release);
         flush_mode_.store(flush, std::memory_order_release);
-        if (executor_) { executor_->run(taskflow_).wait(); }
+        executor_.run(taskflow_).wait();
         flush_mode_.store(false, std::memory_order_release);
         stream_store_.store(nullptr, std::memory_order_release);
         ctx_.store(nullptr, std::memory_order_release);

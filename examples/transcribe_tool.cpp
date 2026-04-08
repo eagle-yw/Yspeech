@@ -1,6 +1,5 @@
 import std;
 import yspeech.engine;
-import yspeech.frame_source;
 import yspeech.types;
 
 void show_help() {
@@ -38,10 +37,10 @@ int main(int argc, char* argv[]) {
     
     try {
         auto start = std::chrono::steady_clock::now();
-        yspeech::Engine engine(config_file);
-        auto file_source = std::make_shared<yspeech::FileSource>(audio_file, "offline", 1.0, false);
-        auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(file_source);
-        engine.set_frame_source(pipeline_source);
+        yspeech::EngineConfigOptions options;
+        options.audio_path = audio_file;
+        options.playback_rate = 0.0;
+        yspeech::Engine engine(config_file, options);
 
         std::vector<yspeech::AsrResult> results;
         std::mutex result_mutex;

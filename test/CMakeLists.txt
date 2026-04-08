@@ -22,9 +22,6 @@ add_executable(test
 target_include_directories(test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 target_link_libraries(test
-    gtest
-    gtest_main
-    gmock
     gmock_main
     yspeech
 )

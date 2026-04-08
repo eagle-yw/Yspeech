@@ -96,6 +96,7 @@ private:
     void load_config();
     void init_components();
     void init_alerting();
+    auto create_frame_source_from_config() -> std::shared_ptr<IFrameSource>;
     void store_frame(AudioFramePtr frame);
     void ingest_frame(AudioFramePtr frame);
     void drain_asr_events();
@@ -408,12 +409,64 @@ void EngineRuntime::init_components() {
 
         stream_store_->init_audio_ring(frame_config_.audio_frame_key, frame_config_.ring_capacity_frames);
         default_frame_source_ = std::make_shared<MicSource>("stream");
-        active_frame_source_ = default_frame_source_;
+        
+        auto configured_source = create_frame_source_from_config();
+        if (configured_source) {
+            active_frame_source_ = configured_source;
+            log_info("Using configured frame source");
+        } else {
+            active_frame_source_ = default_frame_source_;
+            log_info("Using default microphone frame source");
+        }
 
         log_info("Engine runtime initialized successfully");
     } catch (const std::exception& e) {
         throw std::runtime_error(std::format("Failed to initialize engine runtime: {}", e.what()));
     }
+}
+
+auto EngineRuntime::create_frame_source_from_config() -> std::shared_ptr<IFrameSource> {
+    if (!config_.contains("source") || !config_["source"].is_object()) {
+        return nullptr;
+    }
+
+    const auto& source_cfg = config_["source"];
+    if (!source_cfg.contains("type") || !source_cfg["type"].is_string()) {
+        log_warn("Source config missing 'type' field, using default");
+        return nullptr;
+    }
+
+    std::string type = source_cfg["type"].get<std::string>();
+    
+    if (type == "file") {
+        if (!source_cfg.contains("path") || !source_cfg["path"].is_string()) {
+            log_warn("File source config missing 'path' field");
+            return nullptr;
+        }
+        
+        std::string path = source_cfg["path"].get<std::string>();
+        double playback_rate = source_cfg.value("playback_rate", 1.0);
+        const double effective_playback_rate = offline_mode_ ? 0.0 : playback_rate;
+        
+        log_info("Creating FileSource: path={}, playback_rate={}", 
+                 path, effective_playback_rate);
+        
+        auto file_source = std::make_shared<FileSource>(path, "file", effective_playback_rate);
+        return std::make_shared<AudioFramePipelineSource>(file_source);
+    }
+    
+    if (type == "microphone") {
+        log_info("Using default microphone source");
+        return nullptr;
+    }
+    
+    if (type == "stream") {
+        log_info("Using stream source (default MicSource)");
+        return nullptr;
+    }
+    
+    log_warn("Unknown source type: {}", type);
+    return nullptr;
 }
 
 void EngineRuntime::init_alerting() {

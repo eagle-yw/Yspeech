@@ -7,13 +7,27 @@ export module yspeech.engine;
 import std;
 import yspeech.engine_runtime;
 import yspeech.frame_source;
+import yspeech.log;
+import yspeech.runtime_common;
 import yspeech.types;
 
 namespace yspeech {
 
+export struct EngineConfigOptions {
+    std::optional<std::string> audio_path;  ///< Optional audio file path override for source.type=file.
+    std::optional<double> playback_rate;    ///< Optional playback rate override; 0.0 means no pacing.
+    std::optional<std::string> log_level;   ///< Optional runtime log level override.
+};
+
 export class Engine {
 public:
     explicit Engine(const std::string& config_path);
+    /**
+     * @brief Create an engine from a config path with selective runtime overrides.
+     * @param config_path Path to pipeline config JSON.
+     * @param options Optional overrides applied on top of config file values.
+     */
+    Engine(const std::string& config_path, const EngineConfigOptions& options);
     explicit Engine(const nlohmann::json& config);
     ~Engine();
 
@@ -55,7 +69,12 @@ private:
 class Engine::Impl {
 public:
     explicit Impl(const std::string& config_path)
-        : runtime_(config_path) {
+        : config_path_(config_path), runtime_(config_path) {
+        bind_runtime_callbacks();
+    }
+
+    Impl(const std::string& config_path, const EngineConfigOptions& options)
+        : config_path_(config_path), runtime_(build_config(config_path, options)) {
         bind_runtime_callbacks();
     }
 
@@ -124,10 +143,15 @@ public:
     }
 
     std::string get_config_path() const {
-        return runtime_.get_config_path();
+        auto runtime_path = runtime_.get_config_path();
+        if (!runtime_path.empty()) {
+            return runtime_path;
+        }
+        return config_path_;
     }
 
 private:
+    std::string config_path_;
     EngineRuntime runtime_;
 
     mutable std::mutex event_mutex_;
@@ -137,6 +161,25 @@ private:
     StatusCallback status_callback_;
     PerformanceCallback performance_callback_;
     AlertCallback alert_callback_;
+
+    static auto build_config(const std::string& config_path, const EngineConfigOptions& options) -> nlohmann::json {
+        auto config = load_runtime_config(config_path);
+        if (options.log_level.has_value()) {
+            config["log_level"] = *options.log_level;
+        }
+        if (options.audio_path.has_value()) {
+            if (config.contains("source") && config["source"].is_object() &&
+                config["source"].contains("path") && config["source"]["path"].is_string()) {
+                log_warn(
+                    "Overriding source.path from config ({}) with EngineConfigOptions.audio_path ({})",
+                    config["source"]["path"].get<std::string>(),
+                    *options.audio_path
+                );
+            }
+            apply_file_source_override(config, *options.audio_path, options.playback_rate);
+        }
+        return config;
+    }
 
     void bind_runtime_callbacks() {
         runtime_.on_asr_event([this](const AsrEvent& event) {
@@ -238,6 +281,9 @@ private:
 Engine::Engine(const std::string& config_path)
     : impl_(std::make_unique<Impl>(config_path)) {}
 
+Engine::Engine(const std::string& config_path, const EngineConfigOptions& options)
+    : impl_(std::make_unique<Impl>(config_path, options)) {}
+
 Engine::Engine(const nlohmann::json& config)
     : impl_(std::make_unique<Impl>(config)) {}
 
@@ -321,6 +367,10 @@ std::string Engine::get_config_path() const {
 
 export auto create_engine(const std::string& config_path) -> Engine {
     return Engine(config_path);
+}
+
+export auto create_engine(const std::string& config_path, const EngineConfigOptions& options) -> Engine {
+    return Engine(config_path, options);
 }
 
 export auto create_engine(const nlohmann::json& config) -> Engine {

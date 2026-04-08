@@ -39,10 +39,10 @@ TEST(TestAsrRealAudio, OfflineEngineSmoke) {
         GTEST_SKIP() << "Offline demo assets not found";
     }
 
-    yspeech::Engine engine(std::string("examples/configs/offline_paraformer_asr.json"));
-    auto file_source = std::make_shared<yspeech::FileSource>(audio_path.string(), "offline", 1.0, false);
-    auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(file_source);
-    engine.set_frame_source(pipeline_source);
+    yspeech::EngineConfigOptions options;
+    options.audio_path = audio_path.string();
+    options.playback_rate = 1.0;
+    yspeech::Engine engine(std::string("examples/configs/offline_paraformer_asr.json"), options);
 
     std::vector<yspeech::EngineEvent> events;
     engine.on_event([&](const yspeech::EngineEvent& event) { events.push_back(event); });
@@ -63,10 +63,10 @@ TEST(TestAsrRealAudio, StreamingEngineSmoke) {
         GTEST_SKIP() << "Streaming demo assets not found";
     }
 
-    yspeech::Engine engine(std::string("examples/configs/streaming_paraformer_asr.json"));
-    auto file_source = std::make_shared<yspeech::FileSource>(audio_path.string(), "streaming", 1.0, false);
-    auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(file_source);
-    engine.set_frame_source(pipeline_source);
+    yspeech::EngineConfigOptions options;
+    options.audio_path = audio_path.string();
+    options.playback_rate = 1.0;
+    yspeech::Engine engine(std::string("examples/configs/streaming_paraformer_asr.json"), options);
 
     std::vector<yspeech::EngineEvent> events;
     engine.on_event([&](const yspeech::EngineEvent& event) { events.push_back(event); });
@@ -79,4 +79,32 @@ TEST(TestAsrRealAudio, StreamingEngineSmoke) {
     engine.stop();
 
     EXPECT_FALSE(events.empty());
+}
+
+TEST(TestAsrRealAudio, ExplicitFrameSourceOverridesConfigSource) {
+    const auto audio_path = sample_audio_path();
+    if (audio_path.empty() || !streaming_config_exists() || !paraformer_assets_exist()) {
+        GTEST_SKIP() << "Streaming demo assets not found";
+    }
+
+    yspeech::EngineConfigOptions options;
+    options.audio_path = audio_path.string();
+    options.playback_rate = 0.01;
+    yspeech::Engine engine(std::string("examples/configs/streaming_paraformer_asr.json"), options);
+
+    auto override_source = std::make_shared<yspeech::MicSource>("override");
+    override_source->push_frame(override_source->make_frame({}, 0, 0, true, false, 16000, 1));
+    auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(override_source);
+    engine.set_frame_source(pipeline_source);
+
+    engine.start();
+    engine.finish();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    while (!engine.input_eof_reached() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    engine.stop();
+
+    EXPECT_TRUE(engine.input_eof_reached());
 }

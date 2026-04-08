@@ -1,7 +1,6 @@
 import std;
 import yspeech.types;
 import yspeech.engine;
-import yspeech.frame_source;
 
 int main(int argc, char* argv[]) {
     std::println("=== Yspeech 离线 ASR 示例 ===\n");
@@ -17,10 +16,10 @@ int main(int argc, char* argv[]) {
     
     try {
         auto start = std::chrono::steady_clock::now();
-        yspeech::Engine engine(config_file);
-        auto file_source = std::make_shared<yspeech::FileSource>(audio_file, "offline", 1.0, false);
-        auto pipeline_source = std::make_shared<yspeech::AudioFramePipelineSource>(file_source);
-        engine.set_frame_source(pipeline_source);
+        yspeech::EngineConfigOptions options;
+        options.audio_path = audio_file;
+        options.playback_rate = 0.0;
+        yspeech::Engine engine(config_file, options);
 
         yspeech::AsrResult result;
         engine.on_event([&](const yspeech::EngineEvent& event) {
