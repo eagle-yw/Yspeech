@@ -261,6 +261,9 @@ export struct ProcessingStats {
     double operator_time_percent = 0.0;
     double non_operator_time_percent = 0.0;
     double time_to_first_chunk_ms = 0.0;
+    double time_to_first_partial_ms = 0.0;
+    double time_to_first_final_ms = 0.0;
+    double time_to_first_token_ms = 0.0;
     double drain_after_eof_ms = 0.0;
     double stop_overhead_ms = 0.0;
     double stop_resource_monitor_ms = 0.0;
@@ -322,6 +325,8 @@ export struct ProcessingStats {
         result += std::format("│ {:<25} │ {:>11.2f} %  │\n", "Operator Share", operator_time_percent);
         result += std::format("│ {:<25} │ {:>11.2f} %  │\n", "Non-Operator Share", non_operator_time_percent);
         result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Time To First Chunk", time_to_first_chunk_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Time To First Partial", time_to_first_partial_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Time To First Final", time_to_first_final_ms);
         result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Drain After EOF", drain_after_eof_ms);
         result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Stop Overhead", stop_overhead_ms);
         result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Stop.Monitor", stop_resource_monitor_ms);

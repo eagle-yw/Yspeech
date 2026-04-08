@@ -24,6 +24,9 @@ public:
         j["operator_time_percent"] = stats.operator_time_percent;
         j["non_operator_time_percent"] = stats.non_operator_time_percent;
         j["time_to_first_chunk_ms"] = stats.time_to_first_chunk_ms;
+        j["time_to_first_partial_ms"] = stats.time_to_first_partial_ms;
+        j["time_to_first_final_ms"] = stats.time_to_first_final_ms;
+        j["time_to_first_token_ms"] = stats.time_to_first_token_ms;
         j["drain_after_eof_ms"] = stats.drain_after_eof_ms;
         j["stop_overhead_ms"] = stats.stop_overhead_ms;
         j["stop_resource_monitor_ms"] = stats.stop_resource_monitor_ms;
@@ -87,6 +90,9 @@ public:
         oss << "operator_time_percent," << std::fixed << std::setprecision(2) << stats.operator_time_percent << "\n";
         oss << "non_operator_time_percent," << std::fixed << std::setprecision(2) << stats.non_operator_time_percent << "\n";
         oss << "time_to_first_chunk_ms," << std::fixed << std::setprecision(2) << stats.time_to_first_chunk_ms << "\n";
+        oss << "time_to_first_partial_ms," << std::fixed << std::setprecision(2) << stats.time_to_first_partial_ms << "\n";
+        oss << "time_to_first_final_ms," << std::fixed << std::setprecision(2) << stats.time_to_first_final_ms << "\n";
+        oss << "time_to_first_token_ms," << std::fixed << std::setprecision(2) << stats.time_to_first_token_ms << "\n";
         oss << "drain_after_eof_ms," << std::fixed << std::setprecision(2) << stats.drain_after_eof_ms << "\n";
         oss << "stop_overhead_ms," << std::fixed << std::setprecision(2) << stats.stop_overhead_ms << "\n";
         oss << "stop_resource_monitor_ms," << std::fixed << std::setprecision(2) << stats.stop_resource_monitor_ms << "\n";

@@ -446,6 +446,8 @@ int main(int argc, char* argv[]) {
         MetricAgg processing_ms;
         MetricAgg non_operator_ms;
         MetricAgg non_operator_share;
+        MetricAgg first_partial_ms;
+        MetricAgg first_final_ms;
         MetricAgg drain_after_eof_ms;
         MetricAgg operator_share;
         MetricAgg rtf;
@@ -471,6 +473,8 @@ int main(int argc, char* argv[]) {
             processing_ms.add(run.stats.total_processing_time_ms);
             non_operator_ms.add(run.stats.non_operator_time_ms);
             non_operator_share.add(run.stats.non_operator_time_percent);
+            first_partial_ms.add(run.stats.time_to_first_partial_ms);
+            first_final_ms.add(run.stats.time_to_first_final_ms);
             drain_after_eof_ms.add(run.stats.drain_after_eof_ms);
             operator_share.add(run.stats.operator_time_percent);
             rtf.add(run.stats.rtf);
@@ -506,6 +510,8 @@ int main(int argc, char* argv[]) {
         print_metric_row("Processing Time", processing_ms, "ms");
         print_metric_row("Non-Operator Time", non_operator_ms, "ms");
         print_metric_row("Non-Operator Share", non_operator_share, "%");
+        print_metric_row("First Partial", first_partial_ms, "ms");
+        print_metric_row("First Final", first_final_ms, "ms");
         print_metric_row("Drain After EOF", drain_after_eof_ms, "ms");
         print_metric_row("Operator Share", operator_share, "%");
         print_metric_row("RTF", rtf, "-");

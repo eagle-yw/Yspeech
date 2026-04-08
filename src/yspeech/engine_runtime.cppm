@@ -73,9 +73,15 @@ private:
     std::chrono::steady_clock::time_point stats_start_time_{};
     std::chrono::steady_clock::time_point last_performance_emit_{};
     std::chrono::steady_clock::time_point first_chunk_time_{};
+    std::chrono::steady_clock::time_point first_partial_time_{};
+    std::chrono::steady_clock::time_point first_final_time_{};
+    std::chrono::steady_clock::time_point first_token_time_{};
     std::chrono::steady_clock::time_point input_eof_time_{};
     std::chrono::steady_clock::time_point input_eof_status_time_{};
     std::atomic<bool> first_chunk_seen_{false};
+    std::atomic<bool> first_partial_seen_{false};
+    std::atomic<bool> first_final_seen_{false};
+    std::atomic<bool> first_token_seen_{false};
     std::atomic<bool> input_eof_seen_{false};
     std::atomic<bool> input_eof_status_seen_{false};
     double engine_init_time_ms_ = 0.0;
@@ -159,9 +165,15 @@ void EngineRuntime::start() {
     stats_start_time_ = std::chrono::steady_clock::now();
     last_performance_emit_ = stats_start_time_;
     first_chunk_seen_.store(false, std::memory_order_release);
+    first_partial_seen_.store(false, std::memory_order_release);
+    first_final_seen_.store(false, std::memory_order_release);
+    first_token_seen_.store(false, std::memory_order_release);
     input_eof_seen_.store(false, std::memory_order_release);
     input_eof_status_seen_.store(false, std::memory_order_release);
     first_chunk_time_ = {};
+    first_partial_time_ = {};
+    first_final_time_ = {};
+    first_token_time_ = {};
     input_eof_time_ = {};
     input_eof_status_time_ = {};
     stop_resource_monitor_ms_ = 0.0;
@@ -643,6 +655,19 @@ void EngineRuntime::drain_asr_events() {
             if (event.result.text.empty()) {
                 continue;
             }
+            if (event.kind == AsrResultKind::Partial) {
+                if (!first_partial_seen_.exchange(true, std::memory_order_acq_rel)) {
+                    first_partial_time_ = std::chrono::steady_clock::now();
+                }
+            }
+            if (event.kind == AsrResultKind::SegmentFinal || event.kind == AsrResultKind::StreamFinal) {
+                if (!first_final_seen_.exchange(true, std::memory_order_acq_rel)) {
+                    first_final_time_ = std::chrono::steady_clock::now();
+                }
+            }
+            if (!first_token_seen_.exchange(true, std::memory_order_acq_rel)) {
+                first_token_time_ = std::chrono::steady_clock::now();
+            }
             stats_.asr_results_generated++;
             if (asr_event_callback_) {
                 asr_event_callback_(event);
@@ -823,6 +848,27 @@ void EngineRuntime::update_time_breakdown(ProcessingStats& target, std::chrono::
             0.0, std::chrono::duration<double, std::milli>(first_chunk_time_ - stats_start_time_).count());
     } else {
         target.time_to_first_chunk_ms = target.total_processing_time_ms;
+    }
+
+    if (first_partial_seen_.load(std::memory_order_acquire)) {
+        target.time_to_first_partial_ms = std::max(
+            0.0, std::chrono::duration<double, std::milli>(first_partial_time_ - stats_start_time_).count());
+    } else {
+        target.time_to_first_partial_ms = target.total_processing_time_ms;
+    }
+
+    if (first_final_seen_.load(std::memory_order_acquire)) {
+        target.time_to_first_final_ms = std::max(
+            0.0, std::chrono::duration<double, std::milli>(first_final_time_ - stats_start_time_).count());
+    } else {
+        target.time_to_first_final_ms = target.total_processing_time_ms;
+    }
+
+    if (first_token_seen_.load(std::memory_order_acquire)) {
+        target.time_to_first_token_ms = std::max(
+            0.0, std::chrono::duration<double, std::milli>(first_token_time_ - stats_start_time_).count());
+    } else {
+        target.time_to_first_token_ms = target.total_processing_time_ms;
     }
 
     if (input_eof_seen_.load(std::memory_order_acquire)) {
