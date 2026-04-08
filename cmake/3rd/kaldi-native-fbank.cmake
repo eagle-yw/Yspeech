@@ -31,18 +31,24 @@ endif()
 
 message(STATUS "Building kaldi-native-fbank from source...")
 
+set(KALDI_NATIVE_FBANK_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(KALDI_NATIVE_FBANK_BUILD_PYTHON OFF CACHE BOOL "" FORCE)
+
 FetchContent_Declare(
-  kaldi-native-fbank
+  kaldi_native_fbank
   URL "${KALDI_NATIVE_FBANK_ARCHIVE}"
+  URL_HASH SHA256=c6195b3cf374eef824644061d3c04f6b2a9267ae554169cbaa9865c89c1fe4f9
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-  SOURCE_SUBDIR cmake
   EXCLUDE_FROM_ALL
 )
 
-FetchContent_MakeAvailable(kaldi-native-fbank)
-yspeech_set_folder_for_targets_in_dir(${kaldi-native-fbank_SOURCE_DIR} "3rdparty")
+FetchContent_MakeAvailable(kaldi_native_fbank)
+# NOTE:
+# kaldi-native-fbank's SOURCE_SUBDIR layout can make DIRECTORY-scope target
+# introspection fragile across generators/CMake versions. Skip folder tagging
+# here to keep configuration robust.
 
-set(KALDI_NATIVE_FBANK_INCLUDE_DIR "${kaldi-native-fbank_SOURCE_DIR}" CACHE INTERNAL "kaldi-native-fbank include directory")
+set(KALDI_NATIVE_FBANK_INCLUDE_DIR "${kaldi_native_fbank_SOURCE_DIR}" CACHE INTERNAL "kaldi-native-fbank include directory")
 set(KALDI_NATIVE_FBANK_LIBRARY kaldi-native-fbank-core CACHE INTERNAL "kaldi-native-fbank library")
 
 if(YSPEECH_BUILD_DEPS)
@@ -50,7 +56,7 @@ if(YSPEECH_BUILD_DEPS)
     COMMAND ${CMAKE_COMMAND} -E make_directory "${LIB_DIR}/lib"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${LIB_DIR}/include/kaldi-native-fbank/csrc"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:kaldi-native-fbank-core>" "${LIB_DIR}/lib/"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${kaldi-native-fbank_SOURCE_DIR}/kaldi-native-fbank/csrc" "${LIB_DIR}/include/kaldi-native-fbank/csrc"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${kaldi_native_fbank_SOURCE_DIR}/kaldi-native-fbank/csrc" "${LIB_DIR}/include/kaldi-native-fbank/csrc"
     COMMENT "Installing kaldi-native-fbank to ${LIB_DIR}"
   )
   set_target_properties(install_kaldi_native_fbank PROPERTIES FOLDER "CMake/Install")

@@ -17,6 +17,7 @@ target_sources(yspeech
     yspeech/aspects/logger.cppm
     yspeech/aspects/timer.cppm
     yspeech/op.cppm
+    yspeech/op/ort_symbol_lookup.cppm
     yspeech/op/vad/vad.cppm
     yspeech/op/vad/silero.cppm
     yspeech/op/asr/base.cppm
@@ -50,6 +51,7 @@ target_link_libraries(yspeech
 )
 
 target_include_directories(yspeech PRIVATE 
+    ${KALDI_NATIVE_FBANK_INCLUDE_DIR}
     ${onnxruntime_SOURCE_DIR}/include/onnxruntime/core/session
 )
 

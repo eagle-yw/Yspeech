@@ -92,6 +92,7 @@
             "feature_input_key": "fbank",
             "sample_rate": 16000,
             "language": "zh",
+            "execution_provider": "cpu",
             "num_threads": 2,
             "min_new_feature_frames": 12
           },

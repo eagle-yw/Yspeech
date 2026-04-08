@@ -199,11 +199,15 @@ private:
         if (options.audio_path.has_value()) {
             if (config.contains("source") && config["source"].is_object() &&
                 config["source"].contains("path") && config["source"]["path"].is_string()) {
+                const auto configured_path = config["source"]["path"].get<std::string>();
+                const auto& override_path = *options.audio_path;
+                if (configured_path != override_path) {
                 log_warn(
                     "Overriding source.path from config ({}) with EngineConfigOptions.audio_path ({})",
-                    config["source"]["path"].get<std::string>(),
-                    *options.audio_path
+                    configured_path,
+                    override_path
                 );
+                }
             }
             apply_file_source_override(config, *options.audio_path, options.playback_rate);
         }

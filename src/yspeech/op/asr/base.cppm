@@ -48,6 +48,24 @@ public:
         if (config.contains("use_gpu")) {
             use_gpu_ = config["use_gpu"].get<bool>();
         }
+        if (config.contains("execution_provider")) {
+            auto ep = config["execution_provider"].get<std::string>();
+            std::ranges::transform(ep, ep.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (ep == "coreml") {
+                use_coreml_ = true;
+            }
+        }
+        if (config.contains("use_coreml")) {
+            use_coreml_ = config["use_coreml"].get<bool>();
+        }
+        if (config.contains("coreml_ane_only")) {
+            coreml_ane_only_ = config["coreml_ane_only"].get<bool>();
+        }
+        if (config.contains("coreml_flags")) {
+            coreml_flags_ = config["coreml_flags"].get<std::uint32_t>();
+        }
         if (config.contains("num_threads")) {
             num_threads_ = config["num_threads"].get<int>();
         }
@@ -76,6 +94,9 @@ protected:
     int sample_rate_ = 16000;
     std::string language_ = "zh";
     bool use_gpu_ = false;
+    bool use_coreml_ = false;
+    bool coreml_ane_only_ = false;
+    std::uint32_t coreml_flags_ = 0;
     int num_threads_ = 4;
 };
 

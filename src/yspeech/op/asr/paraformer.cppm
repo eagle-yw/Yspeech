@@ -8,6 +8,7 @@ export module yspeech.op.asr.paraformer;
 import std;
 import yspeech.context;
 import yspeech.op;
+import yspeech.op.ort_symbol_lookup;
 import yspeech.op.asr.base;
 import yspeech.stream_store;
 import yspeech.types;
@@ -212,13 +213,14 @@ private:
     }
 
     void init_onnx_session() {
-        Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "yspeech_paraformer");
+        Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "yspeech_paraformer");
         env_ = std::make_unique<Ort::Env>(std::move(env));
 
         Ort::SessionOptions session_options;
         session_options.SetIntraOpNumThreads(num_threads_);
         session_options.SetInterOpNumThreads(1);
         session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        append_coreml_provider(session_options);
 
         session_ = std::make_unique<Ort::Session>(*env_, model_path_.c_str(), session_options);
         memory_info_ = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
@@ -282,6 +284,31 @@ private:
         }
 
         log_debug("Loaded {} tokens from {}", id_to_token_.size(), tokens_path_);
+    }
+
+    void append_coreml_provider(Ort::SessionOptions& session_options) {
+        if (!use_coreml_) {
+            return;
+        }
+        std::uint32_t flags = coreml_flags_;
+        if (coreml_ane_only_) {
+            flags |= 0x004; // COREML_FLAG_ONLY_ENABLE_DEVICE_WITH_ANE
+        }
+        using AppendCoreMLProviderFn = OrtStatus* (*)(OrtSessionOptions*, std::uint32_t);
+        auto* append_coreml_provider = ort_detail::lookup_symbol_fn<AppendCoreMLProviderFn>(
+            "OrtSessionOptionsAppendExecutionProvider_CoreML");
+        if (append_coreml_provider == nullptr) {
+            log_warn("CoreML EP requested for paraformer, but symbol 'OrtSessionOptionsAppendExecutionProvider_CoreML' is unavailable. Falling back to CPU.");
+            return;
+        }
+        auto* status = append_coreml_provider(session_options, flags);
+        if (status != nullptr) {
+            const char* msg = Ort::GetApi().GetErrorMessage(status);
+            log_warn("CoreML EP requested but unavailable for paraformer: {}. Falling back to CPU.", msg ? msg : "unknown");
+            Ort::GetApi().ReleaseStatus(status);
+            return;
+        }
+        log_info("Paraformer using CoreML EP (flags={})", flags);
     }
 
     void log_infer_profile() {

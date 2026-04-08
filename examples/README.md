@@ -67,6 +67,17 @@ cmake --build build
     --benchmark 10
 ```
 
+**CoreML 对照（无需单独 benchmark 配置文件）:**
+```bash
+./build/examples/streaming_demo \
+    examples/configs/streaming_paraformer_asr.json \
+    model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+    20 \
+    --ep coreml \
+    --ane-only 1 \
+    --benchmark 5
+```
+
 **输出示例:**
 ```
 === Yspeech 流式 ASR 实际音频测试 ===
@@ -187,6 +198,7 @@ cmake --build build --target streaming_demo
 ```bash
 ./build/examples/streaming_demo [配置文件] [音频文件] [播放倍率] [队列开关]
 ./build/examples/streaming_demo [配置文件] [音频文件] [播放倍率] --queue <0|1> --benchmark <N>
+./build/examples/streaming_demo [配置文件] [音频文件] [播放倍率] --ep <cpu|coreml> [--ane-only <0|1>]
 ```
 
 **参数说明:**
@@ -194,6 +206,8 @@ cmake --build build --target streaming_demo
 - `队列开关`: 兼容旧参数位，`1/0` 或 `true/false`，用于控制 internal event queue。
 - `--benchmark N`: 连续运行 `N` 次，输出均值/标准差/最小值/最大值。
 - `--queue <0|1>`: 显式设置 internal event queue，建议配合 benchmark 做对比。
+- `--ep <cpu|coreml>`: 运行时覆盖配置内算子的 `execution_provider`（用于 A/B）。
+- `--ane-only <0|1>`: 与 `--ep coreml` 搭配，覆盖 `coreml_ane_only`。
 - `--quiet`: 减少过程输出（benchmark 模式默认启用）。
 
 **代码示例:**

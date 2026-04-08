@@ -90,6 +90,7 @@
             "use_itn": true,
             "detect_emotion": true,
             "sample_rate": 16000,
+            "execution_provider": "cpu",
             "num_threads": 4
           },
           "depends_on": ["fbank"]

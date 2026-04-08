@@ -8,19 +8,19 @@ import yspeech.op.vad.silero;
 using namespace yspeech;
 
 TEST(TestSileroVadSimple, ModelExists) {
-    std::ifstream file("test_data/silero_vad.onnx");
-    EXPECT_TRUE(file.good()) << "Model file not found: test_data/silero_vad.onnx";
+    std::ifstream file("model/vad/silero_vad.onnx");
+    EXPECT_TRUE(file.good()) << "Model file not found: model/vad/silero_vad.onnx";
 }
 
 TEST(TestSileroVadSimple, BasicInit) {
-    std::ifstream file("test_data/silero_vad.onnx");
+    std::ifstream file("model/vad/silero_vad.onnx");
     if (!file.good()) {
-        GTEST_SKIP() << "Model file not found: test_data/silero_vad.onnx";
+        GTEST_SKIP() << "Model file not found: model/vad/silero_vad.onnx";
     }
 
     OpSileroVad vad;
     nlohmann::json config;
-    config["model_path"] = "test_data/silero_vad.onnx";
+    config["model_path"] = "model/vad/silero_vad.onnx";
     config["threshold"] = 0.5f;
     config["sample_rate"] = 16000;
     config["input_buffer_key"] = "audio_planar";

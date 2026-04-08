@@ -1,3 +1,5 @@
+#include <nlohmann/json.hpp>
+
 import std;
 import yspeech.engine;
 import yspeech.log;
@@ -10,6 +12,8 @@ struct DemoOptions {
     std::string audio_file = "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav";
     double playback_rate = 1.0;
     bool enable_event_queue = true;
+    std::optional<std::string> execution_provider_override;
+    std::optional<bool> coreml_ane_only_override;
     int benchmark_runs = 0;
     bool quiet = false;
 };
@@ -29,6 +33,8 @@ void print_help(const char* program) {
     std::println("");
     std::println("选项:");
     std::println("  --queue <bool>        显式设置 internal event queue");
+    std::println("  --ep <cpu|coreml>     覆盖算子的 execution_provider（benchmark 常用）");
+    std::println("  --ane-only <bool>     与 --ep coreml 搭配，覆盖 coreml_ane_only");
     std::println("  --benchmark <N>       连续运行 N 次并输出统计");
     std::println("  --quiet               减少过程输出（benchmark 默认开启）");
     std::println("  --help                显示帮助");
@@ -64,6 +70,22 @@ auto parse_args(int argc, char* argv[]) -> DemoOptions {
             opts.enable_event_queue = parse_bool_flag(argv[++i]);
             continue;
         }
+        if (arg == "--ep" && i + 1 < argc) {
+            std::string ep = argv[++i];
+            std::ranges::transform(ep, ep.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (ep == "cpu" || ep == "coreml") {
+                opts.execution_provider_override = ep;
+            } else {
+                throw std::invalid_argument(std::format("Unsupported --ep value: {}", ep));
+            }
+            continue;
+        }
+        if (arg == "--ane-only" && i + 1 < argc) {
+            opts.coreml_ane_only_override = parse_bool_flag(argv[++i]);
+            continue;
+        }
 
         // Backward compatibility: positional queue flag at argv[4]
         if (i == 4) {
@@ -83,14 +105,66 @@ struct RunResult {
     std::string final_text;
 };
 
+struct EffectiveConfig {
+    std::string path;
+    bool temporary = false;
+};
+
+auto build_effective_config(const DemoOptions& opts) -> EffectiveConfig {
+    if (!opts.execution_provider_override.has_value() && !opts.coreml_ane_only_override.has_value()) {
+        return {.path = opts.config_file, .temporary = false};
+    }
+
+    std::ifstream in(opts.config_file);
+    if (!in.is_open()) {
+        throw std::runtime_error(std::format("Failed to open config: {}", opts.config_file));
+    }
+
+    nlohmann::json config;
+    in >> config;
+
+    if (config.contains("pipelines") && config["pipelines"].is_array()) {
+        for (auto& pipeline : config["pipelines"]) {
+            if (!pipeline.contains("ops") || !pipeline["ops"].is_array()) {
+                continue;
+            }
+            for (auto& op : pipeline["ops"]) {
+                if (!op.contains("params") || !op["params"].is_object()) {
+                    continue;
+                }
+                auto& params = op["params"];
+                if (opts.execution_provider_override.has_value()) {
+                    params["execution_provider"] = *opts.execution_provider_override;
+                }
+                if (opts.coreml_ane_only_override.has_value()) {
+                    params["coreml_ane_only"] = *opts.coreml_ane_only_override;
+                }
+            }
+        }
+    }
+
+    const auto temp_dir = std::filesystem::temp_directory_path();
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto tid_hash = std::hash<std::thread::id>{}(std::this_thread::get_id());
+    const auto file = temp_dir / std::format("yspeech_streaming_demo_cfg_{}_{}.json", tid_hash, stamp);
+    std::ofstream out(file);
+    if (!out.is_open()) {
+        throw std::runtime_error(std::format("Failed to write temp config: {}", file.string()));
+    }
+    out << config.dump(2);
+    return {.path = file.string(), .temporary = true};
+}
+
 auto run_once(const DemoOptions& opts, bool verbose) -> RunResult {
+    const auto effective_config = build_effective_config(opts);
+
     yspeech::EngineConfigOptions engine_opts;
     engine_opts.log_level = "warn";
     engine_opts.audio_path = opts.audio_file;
     engine_opts.playback_rate = opts.playback_rate;
     engine_opts.enable_event_queue = opts.enable_event_queue;
 
-    yspeech::Engine asr(opts.config_file, engine_opts);
+    yspeech::Engine asr(effective_config.path, engine_opts);
     std::mutex status_mutex;
     std::condition_variable status_cv;
     bool input_eof_seen = false;
@@ -297,6 +371,10 @@ auto run_once(const DemoOptions& opts, bool verbose) -> RunResult {
         std::lock_guard lock(transcript_mutex);
         result.final_text = final_transcript;
     }
+    if (effective_config.temporary) {
+        std::error_code ec;
+        std::filesystem::remove(effective_config.path, ec);
+    }
     return result;
 }
 
@@ -344,6 +422,12 @@ int main(int argc, char* argv[]) {
     std::print("音频文件: {}\n", opts.audio_file);
     std::print("source.playback_rate: {}\n", opts.playback_rate);
     std::print("engine.enable_event_queue: {}\n", opts.enable_event_queue ? "true" : "false");
+    if (opts.execution_provider_override.has_value()) {
+        std::print("override.execution_provider: {}\n", *opts.execution_provider_override);
+    }
+    if (opts.coreml_ane_only_override.has_value()) {
+        std::print("override.coreml_ane_only: {}\n", *opts.coreml_ane_only_override ? "true" : "false");
+    }
     if (opts.benchmark_runs > 0) {
         std::print("benchmark.runs: {}\n", opts.benchmark_runs);
     }

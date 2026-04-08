@@ -9,6 +9,7 @@ import std;
 import yspeech.context;
 import yspeech.error;
 import yspeech.op;
+import yspeech.op.ort_symbol_lookup;
 import yspeech.log;
 import yspeech.frame_ring;
 import yspeech.stream_store;
@@ -177,6 +178,24 @@ private:
         if (config.contains("input_frame_key")) {
             input_frame_key_ = config["input_frame_key"].get<std::string>();
         }
+        if (config.contains("execution_provider")) {
+            auto ep = config["execution_provider"].get<std::string>();
+            std::ranges::transform(ep, ep.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (ep == "coreml") {
+                use_coreml_ = true;
+            }
+        }
+        if (config.contains("use_coreml")) {
+            use_coreml_ = config["use_coreml"].get<bool>();
+        }
+        if (config.contains("coreml_ane_only")) {
+            coreml_ane_only_ = config["coreml_ane_only"].get<bool>();
+        }
+        if (config.contains("coreml_flags")) {
+            coreml_flags_ = config["coreml_flags"].get<std::uint32_t>();
+        }
 
         if (config.contains("output_key")) {
             output_key_ = config["output_key"].get<std::string>();
@@ -207,12 +226,13 @@ private:
     }
 
     void init_onnx_session() {
-        Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "yspeech_vad");
+        Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "yspeech_vad");
         env_ = std::make_unique<Ort::Env>(std::move(env));
 
         Ort::SessionOptions session_options;
         session_options.SetIntraOpNumThreads(2);
         session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        append_coreml_provider(session_options);
 
         session_ = std::make_unique<Ort::Session>(*env_, model_path_.c_str(), session_options);
         memory_info_ = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
@@ -331,6 +351,31 @@ private:
         log_info("Model I/O mapping: audio_input_idx={}, h_idx={}, c_idx={}, sr_idx={}, prob_idx={}, h_out_idx={}, c_out_idx={}",
                  audio_input_idx_, h_input_idx_, c_input_idx_, sr_input_idx_,
                  prob_output_idx_, h_output_idx_, c_output_idx_);
+    }
+
+    void append_coreml_provider(Ort::SessionOptions& session_options) {
+        if (!use_coreml_) {
+            return;
+        }
+        std::uint32_t flags = coreml_flags_;
+        if (coreml_ane_only_) {
+            flags |= 0x004; // COREML_FLAG_ONLY_ENABLE_DEVICE_WITH_ANE
+        }
+        using AppendCoreMLProviderFn = OrtStatus* (*)(OrtSessionOptions*, std::uint32_t);
+        auto* append_coreml_provider = ort_detail::lookup_symbol_fn<AppendCoreMLProviderFn>(
+            "OrtSessionOptionsAppendExecutionProvider_CoreML");
+        if (append_coreml_provider == nullptr) {
+            log_warn("CoreML EP requested for silero_vad, but symbol 'OrtSessionOptionsAppendExecutionProvider_CoreML' is unavailable. Falling back to CPU.");
+            return;
+        }
+        auto* status = append_coreml_provider(session_options, flags);
+        if (status != nullptr) {
+            const char* msg = Ort::GetApi().GetErrorMessage(status);
+            log_warn("CoreML EP requested but unavailable for silero_vad: {}. Falling back to CPU.", msg ? msg : "unknown");
+            Ort::GetApi().ReleaseStatus(status);
+            return;
+        }
+        log_info("SileroVad using CoreML EP (flags={})", flags);
     }
 
     void reset_state() {
@@ -567,6 +612,9 @@ private:
     std::string reader_key_ = "vad_reader";
     std::string output_key_ = "vad";
     std::string operator_id_ = "vad";
+    bool use_coreml_ = false;
+    bool coreml_ane_only_ = false;
+    std::uint32_t coreml_flags_ = 0;
     int min_speech_duration_ms_ = MIN_SPEECH_DURATION_MS;
     int min_silence_duration_ms_ = MIN_SILENCE_DURATION_MS;
     std::vector<float> pending_samples_;
