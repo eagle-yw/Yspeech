@@ -16,23 +16,19 @@ flowchart LR
     engine[Engine]
     runtime[EngineRuntime]
     source[IFrameSource<br/>FileSource / MicSource / StreamSource]
-    store[StreamStore<br/>audio_frames ring]
     dag[RuntimeDagExecutor]
     pipe[PipelineExecutor / tf::Pipeline]
     stage[Domain Stage]
     core[Domain Core]
-    ctx[Context]
     callback[事件 / 状态 / 性能回调]
 
     user --> engine
     engine --> runtime
     runtime --> source
-    source --> store
     runtime --> dag
     dag --> pipe
     pipe --> stage
     stage --> core
-    core <--> ctx
     runtime --> callback
     engine --> callback
 ```
@@ -204,8 +200,8 @@ flowchart LR
 4. 数据面和控制面是分开的。
    当前主线以 `PipelineToken + SegmentState` 为主数据面。
 
-5. 当前 Taskflow runtime 的主数据面是 `SegmentState`。
-   `VAD -> Feature -> ASR` 路径已经围绕段级音频、段级特征和段级结果工作，`Context` 不再承担这条主路径的数据交换职责。
+5. 当前 Taskflow runtime 的主数据面是 `PipelineToken + SegmentState`。
+   `VAD -> Feature -> ASR` 路径围绕段级音频、连续流特征快照和段级结果工作。
 
 ## 组件职责
 
@@ -265,23 +261,16 @@ flowchart LR
 - 领域 stage 和对应 core 强绑定，放在一起更容易维护
 - `runtime/` 下放真正的运行时骨架，`domain/` 下放领域 stage/core
 
-### StreamStore / FrameRing
+### Runtime 数据面
 
-- 默认音频 ring key 是 `audio_frames`
-- 支持多 reader
-- 支持 overrun 检测和 reader 恢复
-- 保留 `eos` / `gap` 语义
+- `RuntimeContext`
+  - 保存运行时配置、状态/告警/性能回调和少量共享运行状态
+- `PipelineToken`
+  - 作为跨 stage 流转的最小单位
+- `SegmentState`
+  - 保存段级音频、识别结果和必要的段级状态
 
-### Context
-
-- 保存处理链中的中间结果和事件
-- 保存错误、状态统计、性能统计
-- 运行时约定的核心键包括：
-  - `asr_events`
-  - `vad_segments`
-  - `vad_is_speech`
-  - `global_eof`
-  - `audio_frame_*`
+当前运行时通过 `RuntimeContext`、`PipelineToken` 和 `SegmentState` 组织数据交换与共享状态。
 
 ## 配置模型
 

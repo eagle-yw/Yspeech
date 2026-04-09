@@ -476,9 +476,16 @@ TEST(PipelineRuntime, FeatureStageBuildsSegmentFeatureData) {
     {
         std::lock_guard lock(segment->mutex);
         EXPECT_TRUE(segment->feature_ready);
-        EXPECT_FALSE(segment->features_accumulated.empty());
         EXPECT_GT(segment->feature_version, 0u);
         EXPECT_EQ(segment->audio_samples_consumed_by_feature, 16000u);
+        EXPECT_TRUE(segment->features_accumulated.empty());
+    }
+    {
+        std::scoped_lock lock(runtime.stream_feature_mutex);
+        auto it = runtime.stream_feature_snapshots.find("default");
+        ASSERT_NE(it, runtime.stream_feature_snapshots.end());
+        EXPECT_FALSE(it->second.features.empty());
+        EXPECT_GT(it->second.version, 0u);
     }
     EXPECT_FALSE(token.feature_frames.empty());
     EXPECT_GT(token.feature_version, 0u);

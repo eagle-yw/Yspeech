@@ -68,6 +68,14 @@ public:
                 return true;
             }
             std::lock_guard segment_lock(segment->mutex);
+            if (segment->lifecycle == SegmentLifecycle::Closed && segment->final_emitted) {
+                segment->audio_accumulated.clear();
+                segment->audio_accumulated.shrink_to_fit();
+                segment->features_accumulated.clear();
+                segment->features_accumulated.shrink_to_fit();
+                segment->last_partial.reset();
+                segment->final_result.reset();
+            }
             return segment->lifecycle == SegmentLifecycle::Closed && segment->final_emitted;
         });
     }

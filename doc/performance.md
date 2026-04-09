@@ -120,6 +120,63 @@
 - 每个 core 的 `% Task` 反映各自对总任务时间的贡献
 - 它们加起来不要求正好等于 `100%`
 
+## `Peak Memory` 的理解方式
+
+`Peak Memory` 是任务运行期间进程峰值内存的观测值。
+
+它更适合用来回答这两个问题：
+
+- 当前主线有没有明显内存回退
+- 某次结构调整有没有引入重复缓存或重复模型实例
+
+它不适合用来直接推导：
+
+- 某个单独 core 占了多少内存
+- 某个字段精确占了多少 MB
+
+### 当前主线里最常见的内存来源
+
+对流式 ASR 主线来说，峰值内存通常主要来自：
+
+- ASR 模型实例
+- 流式特征快照
+- 尚未回收的 closed segment
+- 音频输入与事件队列的暂存
+
+### 一次实际收敛记录
+
+在 `streaming_paraformer_asr.json` 主线配置上，我们曾观察到：
+
+- `Peak Memory ≈ 670 MB`
+
+定位后发现，主要是 3 类结构性冗余叠加：
+
+1. `AsrStage` 默认按 `pipeline_lines` 扩成多份 core
+2. 同一份特征同时保存在
+   - `RuntimeContext.stream_feature_snapshots`
+   - `SegmentState.features_accumulated`
+3. closed segment 没有及时清理大对象和回收
+
+收敛后改成：
+
+- ASR core 默认池大小为 `1`
+- ASR 直接读取全流特征快照
+- 不再把整份流特征复制进每个 segment
+- closed segment 在完成后清理 `audio/features/result`
+- stream final 后清理对应 stream 的特征快照
+
+同一主线配置再次实跑后，峰值内存降到：
+
+- `Peak Memory = 393 MB`
+
+这类记录说明：
+
+- `Peak Memory` 对发现“重复状态/重复实例”很有价值
+- 一旦它突然抬高，优先检查是否出现了
+  - 模型池扩容
+  - 特征双份缓存
+  - segment 未回收
+
 ## 导出字段口径
 
 `PerformanceExporter` 导出的 JSON / CSV 现在和终端表格保持一致：

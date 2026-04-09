@@ -5,7 +5,6 @@ module;
 export module yspeech.runtime.common;
 
 import std;
-import yspeech.context;
 import yspeech.log;
 import yspeech.pipeline_config;
 

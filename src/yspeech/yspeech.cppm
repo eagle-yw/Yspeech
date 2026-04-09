@@ -2,10 +2,7 @@ export module yspeech;
 
 export import yspeech.types;
 export import yspeech.ring_buffer;
-export import yspeech.frame_ring;
-export import yspeech.stream_store;
 export import yspeech.error;
-export import yspeech.context;
 export import yspeech.log;
 export import yspeech.capability;
 export import yspeech.capability.alert;

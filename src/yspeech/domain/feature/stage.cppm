@@ -73,6 +73,9 @@ public:
                 .feature_count = static_cast<int>(stream_feature_snapshot.size())
             };
         }
+        if (output.has_value()) {
+            token.feature_version = stream_feature_version;
+        }
         if (!token.segment_id.has_value()) {
             return;
         }
@@ -82,26 +85,29 @@ public:
             return;
         }
 
-        if (output.has_value()) {
-            token.feature_version = stream_feature_version;
-        }
-        if (!output.has_value() || output->features.empty()) {
-            return;
-        }
-
         {
             std::lock_guard lock(segment->mutex);
-            segment->features_accumulated = stream_feature_snapshot;
             segment->audio_samples_consumed_by_feature = segment->audio_accumulated.size();
             segment->feature_version = stream_feature_version;
             segment->feature_ready = true;
+            if (segment->lifecycle == SegmentLifecycle::Closed) {
+                segment->audio_accumulated.clear();
+                segment->audio_accumulated.shrink_to_fit();
+                segment->features_accumulated.clear();
+                segment->features_accumulated.shrink_to_fit();
+            }
         }
 
-        if (output.has_value()) {
+        if (output.has_value() && !output->features.empty()) {
             token.feature_frames.insert(token.feature_frames.end(), output->features.begin(), output->features.end());
         }
         token.feature_version = stream_feature_version;
-        log_debug("FeatureStage produced {} frames for stream {} segment {}", output->num_frames, token.stream_id, *token.segment_id);
+        log_debug(
+            "FeatureStage advanced stream {} to feature version {} for segment {}",
+            token.stream_id,
+            stream_feature_version,
+            *token.segment_id
+        );
     }
 
     void deinit() {

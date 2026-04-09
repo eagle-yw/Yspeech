@@ -103,48 +103,22 @@ yspeech::RuntimeDagExecutor dag_executor;
 - `RuntimeContext`
 - `PipelineToken`
 
-## 5. StreamStore / FrameRing
+## 5. SegmentState / RuntimeContext
 
-流式数据面，负责 `AudioFrame` 通道：
-
-```cpp
-yspeech::StreamStore store;
-store.init_audio_ring("audio_frames", 6000);
-store.push_frame("audio_frames", frame);
-auto read = store.read_frame("audio_frames", "vad_reader");
-```
-
-职责：
-
-- 管理 `audio_frames` ring
-- 支持多 reader 独立游标
-- 在 reader 落后时支持 overrun 恢复
-- 保留 `eos/gap` 语义
-
-## 6. SegmentState / Context
-
-当前主线的数据面是 `SegmentState`，`Context` 主要承担通用状态、事件和统计承载：
+当前主线的数据面是 `SegmentState`，共享运行状态通过 `RuntimeContext` 传递：
 
 ```cpp
 yspeech::SegmentState segment;
 segment.audio_accumulated = samples;
-segment.features_accumulated = features;
 ```
 
 职责：
 
-- `SegmentState` 保存段级音频、特征和识别结果
-- `Context` 保存事件、错误、性能统计和少量运行时状态
-- 两者都可承载错误和性能统计相关上下文
+- `SegmentState` 保存段级音频、识别结果和必要的段级状态
+- `RuntimeContext` 保存配置、事件/状态/性能回调和少量共享运行时状态
+- `PipelineToken` 负责在 stage 间携带当前帧或段的路由信息
 
-常见运行时键：
-
-- `asr_events`
-- `vad_segments`
-- `vad_is_speech`
-- `global_eof`
-
-## 7. Core 注册系统
+## 6. Core 注册系统
 
 当前主线保留了“按名字注册、按配置创建”的扩展思路，但注册目标已经收敛到领域 core：
 

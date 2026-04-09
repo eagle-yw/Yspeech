@@ -5,12 +5,8 @@ target_sources(yspeech
     PUBLIC FILE_SET CXX_MODULES BASE_DIRS . FILES
     yspeech/types.cppm
     yspeech/ring_buffer.cppm
-    yspeech/frame_ring.cppm
-    yspeech/stream_store.cppm
     yspeech/error.cppm
-    yspeech/state.cppm
     yspeech/data_keys.cppm
-    yspeech/context.cppm
     yspeech/log.cppm
     yspeech/capability.cppm
     yspeech/capabilities/alert.cppm

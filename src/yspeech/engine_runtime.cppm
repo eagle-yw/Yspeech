@@ -6,7 +6,6 @@ export module yspeech.engine_runtime;
 
 import std;
 import yspeech.runtime.common;
-import yspeech.context;
 import yspeech.frame_source;
 import yspeech.pipeline_config;
 import yspeech.runtime.pipeline_builder;
@@ -22,7 +21,6 @@ import yspeech.domain.source.stage;
 import yspeech.domain.vad.stage;
 import yspeech.domain.feature.stage;
 import yspeech.domain.asr.stage;
-import yspeech.stream_store;
 import yspeech.types;
 import yspeech.log;
 import yspeech.resource_monitor;
@@ -103,8 +101,6 @@ private:
     std::string task_ = "asr";
     PipelineConfig pipeline_config_;
     FrameConfig frame_config_;
-    std::unique_ptr<StreamStore> stream_store_;
-    std::unique_ptr<Context> context_;
     std::shared_ptr<MicSource> default_frame_source_;
     std::shared_ptr<IFrameSource> active_frame_source_;
     bool offline_mode_ = false;
@@ -144,14 +140,9 @@ private:
     double stop_drain_events_ms_ = 0.0;
     double stop_event_join_ms_ = 0.0;
     std::atomic<std::size_t> total_audio_samples_{0};
-    std::thread event_thread_;
     std::thread source_thread_;
-    bool last_vad_state_ = false;
-    std::size_t last_vad_segment_count_ = 0;
-
-    mutable std::mutex event_mutex_;
-    std::condition_variable event_cv_;
-    std::atomic<bool> has_pending_event_work_{false};
+    std::unordered_set<std::string> emitted_vad_segment_keys_;
+    std::atomic<float> last_confidence_{0.0f};
 
     std::function<void(const AsrEvent&)> asr_event_callback_;
     VadCallback vad_callback_;
@@ -169,19 +160,17 @@ private:
     auto create_frame_source_from_config() -> std::shared_ptr<IFrameSource>;
     void store_frame(AudioFramePtr frame);
     void ingest_frame(AudioFramePtr frame);
-    void drain_asr_events();
-    void drain_vad_events();
     void emit_status(const std::string& status);
     void emit_alert(const std::string& alert_id, const std::string& message);
     void emit_performance_if_due();
     void finalize_stats();
-    void merge_core_timings(ProcessingStats& target) const;
     void update_time_breakdown(ProcessingStats& target, std::chrono::steady_clock::time_point now) const;
-    void signal_event_work();
     void emit_stream_drained_once();
     ProcessingStats build_live_stats_snapshot() const;
     void finalize_stream_if_needed();
     void await_pipeline_drain_if_needed();
+    auto make_vad_segment_key(const VadSegment& segment) const -> std::string;
+    bool record_vad_segment_if_new(const VadSegment& segment);
 };
 
 EngineRuntime::EngineRuntime(const std::string& config_path)
@@ -236,12 +225,12 @@ void EngineRuntime::start() {
     stop_drain_events_ms_ = 0.0;
     stop_event_join_ms_ = 0.0;
     stream_drained_emitted_.store(false, std::memory_order_release);
+    emitted_vad_segment_keys_.clear();
+    last_confidence_.store(0.0f, std::memory_order_release);
 
     if (pipeline_runtime_context_.has_value()) {
         pipeline_runtime_context_->run_start_time = stats_start_time_;
     }
-
-    context_->set("streaming", !offline_mode_);
     emit_status("started");
 
     if (runtime_dag_executor_) {
@@ -251,30 +240,6 @@ void EngineRuntime::start() {
     }
 
     ResourceMonitor::start_monitoring(100);
-
-    event_thread_ = std::thread([this]() {
-        while (running_) {
-            std::unique_lock<std::mutex> lock(event_mutex_);
-            event_cv_.wait_for(lock, std::chrono::milliseconds(10), [this]() {
-                return !running_ || has_pending_event_work_;
-            });
-
-            if (!running_) {
-                break;
-            }
-
-            has_pending_event_work_ = false;
-            lock.unlock();
-
-            if (!context_) {
-                continue;
-            }
-
-            drain_asr_events();
-            drain_vad_events();
-            emit_performance_if_due();
-        }
-    });
 
     source_thread_ = std::thread([this]() {
         if (offline_mode_) {
@@ -286,27 +251,20 @@ void EngineRuntime::start() {
                 AudioFramePtr frame;
                 if (!active_frame_source_->next(frame) || !frame) {
                     emit_status("input_eof");
-                    signal_event_work();
                     finalize_stream_if_needed();
-                    drain_asr_events();
-                    drain_vad_events();
                     emit_stream_drained_once();
-                    signal_event_work();
                     break;
                 }
 
                 if (frame->eos) {
                     emit_status("input_eof");
-                    signal_event_work();
                 }
                 ingest_frame(frame);
+                emit_performance_if_due();
                 if (frame->eos) {
                     finalize_stream_if_needed();
                     await_pipeline_drain_if_needed();
-                    drain_asr_events();
-                    drain_vad_events();
                     emit_stream_drained_once();
-                    signal_event_work();
                     break;
                 }
             }
@@ -321,27 +279,20 @@ void EngineRuntime::start() {
             AudioFramePtr frame;
             if (!active_frame_source_->next(frame) || !frame) {
                 emit_status("input_eof");
-                signal_event_work();
                 finalize_stream_if_needed();
                 await_pipeline_drain_if_needed();
-                drain_asr_events();
-                drain_vad_events();
                 emit_stream_drained_once();
-                signal_event_work();
                 break;
             }
 
             if (frame->eos) {
                 emit_status("input_eof");
-                signal_event_work();
             }
             ingest_frame(frame);
+            emit_performance_if_due();
             if (frame->eos) {
                 await_pipeline_drain_if_needed();
-                drain_asr_events();
-                drain_vad_events();
                 emit_stream_drained_once();
-                signal_event_work();
                 break;
             }
         }
@@ -367,10 +318,7 @@ void EngineRuntime::finish() {
         source_thread_.join();
         finalize_stream_if_needed();
         await_pipeline_drain_if_needed();
-        drain_asr_events();
-        drain_vad_events();
         emit_stream_drained_once();
-        signal_event_work();
     }
 }
 
@@ -380,7 +328,6 @@ void EngineRuntime::stop() {
     }
 
     running_ = false;
-    event_cv_.notify_all();
 
     auto phase_start = std::chrono::steady_clock::now();
     ResourceMonitor::stop_monitoring();
@@ -409,18 +356,11 @@ void EngineRuntime::stop() {
         std::chrono::steady_clock::now() - phase_start).count();
 
     phase_start = std::chrono::steady_clock::now();
-    drain_asr_events();
-    drain_vad_events();
     emit_stream_drained_once();
     stop_drain_events_ms_ = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - phase_start).count();
 
-    phase_start = std::chrono::steady_clock::now();
-    if (event_thread_.joinable()) {
-        event_thread_.join();
-    }
-    stop_event_join_ms_ = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - phase_start).count();
+    stop_event_join_ms_ = 0.0;
 
     if (source_stage_) {
         source_stage_->deinit();
@@ -505,29 +445,18 @@ void EngineRuntime::push_audio(const float* data, std::size_t size) {
 }
 
 bool EngineRuntime::input_eof_reached() const {
-    return context_ && context_->get_or_default("global_eof", false);
+    return input_eof_seen_.load(std::memory_order_acquire);
 }
 
 bool EngineRuntime::is_speaking() const {
-    if (context_ && context_->contains("is_speaking")) {
-        try {
-            return context_->get<bool>("is_speaking");
-        } catch (...) {
-            return false;
-        }
+    if (segment_registry_.has_value()) {
+        return !segment_registry_->active_segments().empty();
     }
     return false;
 }
 
 float EngineRuntime::get_confidence() const {
-    if (context_ && context_->contains("confidence")) {
-        try {
-            return context_->get<float>("confidence");
-        } catch (...) {
-            return 0.0f;
-        }
-    }
-    return 0.0f;
+    return last_confidence_.load(std::memory_order_acquire);
 }
 
 void EngineRuntime::on_asr_event(std::function<void(const AsrEvent&)> callback) {
@@ -551,9 +480,7 @@ void EngineRuntime::on_alert(AlertCallback callback) {
 }
 
 ProcessingStats EngineRuntime::get_stats() const {
-    auto merged = stats_;
-    merge_core_timings(merged);
-    return merged;
+    return stats_;
 }
 
 const nlohmann::json& EngineRuntime::get_config() const {
@@ -577,8 +504,6 @@ void EngineRuntime::init_components() {
     try {
         apply_runtime_log_level(config_);
         pipeline_config_ = PipelineConfig::from_json(config_);
-        stream_store_ = std::make_unique<StreamStore>();
-        context_ = std::make_unique<Context>();
 
         frame_config_ = read_frame_config(config_);
         offline_mode_ = config_.contains("mode") && config_["mode"].is_string() &&
@@ -591,6 +516,15 @@ void EngineRuntime::init_components() {
         pipeline_runtime_context_->config = config_;
         pipeline_runtime_context_->task = task_;
         pipeline_runtime_context_->stats = &stats_;
+        pipeline_runtime_context_->emit_status = [this](const std::string& status) { emit_status(status); };
+        pipeline_runtime_context_->emit_alert = [this](const std::string& alert_id, const std::string& message) {
+            emit_alert(alert_id, message);
+        };
+        pipeline_runtime_context_->emit_performance = [this](const ProcessingStats& stats) {
+            if (performance_callback_) {
+                performance_callback_(stats);
+            }
+        };
         segment_registry_.emplace();
 
         auto builder_config = make_pipeline_builder_config(pipeline_config_, config_);
@@ -665,7 +599,15 @@ void EngineRuntime::init_components() {
                 stage && cfg.id() == stage->stage_id && !cfg.ops().empty()) {
                 auto params = cfg.ops().front().params.is_null() ? nlohmann::json::object() : cfg.ops().front().params;
                 params["__core_id"] = cfg.ops().front().id;
-                params["__core_pool_size"] = builder_config.num_lines;
+                const auto default_core_pool_size = std::size_t{1};
+                if (config_.contains("runtime") && config_["runtime"].is_object()) {
+                    params["__core_pool_size"] = std::max<std::size_t>(
+                        1,
+                        config_["runtime"].value("asr_core_pool_size", default_core_pool_size)
+                    );
+                } else {
+                    params["__core_pool_size"] = default_core_pool_size;
+                }
                 params["model_name"] = cfg.ops().front().name;
                 params["capabilities"] = build_stage_capabilities(pipeline_config_, cfg.ops().front());
                 asr_stage_->init(params);
@@ -675,9 +617,12 @@ void EngineRuntime::init_components() {
 
         pipeline_runtime_context_->emit_event = [this](const EngineEvent& event) {
             if (event.kind == EngineEventKind::VadEnd && event.vad_segment.has_value()) {
-                stats_.speech_segments_detected++;
-                if (vad_callback_) {
-                    vad_callback_(false, event.vad_segment->start_ms, event.vad_segment->end_ms);
+                last_confidence_.store(event.vad_segment->confidence, std::memory_order_release);
+                if (record_vad_segment_if_new(*event.vad_segment)) {
+                    stats_.speech_segments_detected++;
+                    if (vad_callback_) {
+                        vad_callback_(false, event.vad_segment->start_ms, event.vad_segment->end_ms);
+                    }
                 }
                 return;
             }
@@ -746,7 +691,6 @@ void EngineRuntime::init_components() {
             pipeline_executor_->set_asr_stage(asr_callback);
             pipeline_executor_->set_event_stage(event_callback);
         }
-        stream_store_->init_audio_ring(frame_config_.audio_frame_key, frame_config_.ring_capacity_frames);
         std::string source_type = "microphone";
         if (config_.contains("source") && config_["source"].is_object() &&
             config_["source"].contains("type") && config_["source"]["type"].is_string()) {
@@ -818,18 +762,9 @@ auto EngineRuntime::create_frame_source_from_config() -> std::shared_ptr<IFrameS
 }
 
 void EngineRuntime::store_frame(AudioFramePtr frame) {
-    if (!frame || !context_) {
+    if (!frame) {
         return;
     }
-
-    context_->set("audio_frame", frame);
-    context_->set("audio_frame_stream_id", frame->stream_id);
-    context_->set("audio_frame_seq", frame->seq);
-    context_->set("audio_frame_pts_ms", frame->pts_ms);
-    context_->set("audio_frame_dur_ms", frame->dur_ms);
-    context_->set("audio_frame_gap", frame->gap);
-    context_->set("audio_frame_eos", frame->eos);
-    stream_store_->push_frame(frame_config_.audio_frame_key, frame);
     has_input_.store(true, std::memory_order_release);
 
     if (!frame->samples.empty()) {
@@ -842,7 +777,6 @@ void EngineRuntime::store_frame(AudioFramePtr frame) {
     stats_.audio_chunks_processed++;
 
     if (frame->eos) {
-        context_->set("global_eof", true);
         if (!input_eof_seen_.exchange(true, std::memory_order_acq_rel)) {
             input_eof_time_ = std::chrono::steady_clock::now();
         }
@@ -852,7 +786,7 @@ void EngineRuntime::store_frame(AudioFramePtr frame) {
 
 void EngineRuntime::ingest_frame(AudioFramePtr frame) {
     store_frame(frame);
-    if (!frame || !context_) {
+    if (!frame) {
         return;
     }
 
@@ -877,14 +811,9 @@ void EngineRuntime::ingest_frame(AudioFramePtr frame) {
             pipeline_executor_->finish();
         }
     }
-
-    signal_event_work();
 }
 
 void EngineRuntime::finalize_stream_if_needed() {
-    if (!context_) {
-        return;
-    }
     if (!has_input_.load(std::memory_order_acquire)) {
         return;
     }
@@ -892,7 +821,6 @@ void EngineRuntime::finalize_stream_if_needed() {
         return;
     }
 
-    context_->set("global_eof", true);
     if (!input_eof_seen_.exchange(true, std::memory_order_acq_rel)) {
         input_eof_time_ = std::chrono::steady_clock::now();
     }
@@ -901,7 +829,6 @@ void EngineRuntime::finalize_stream_if_needed() {
     } else if (pipeline_executor_) {
         pipeline_executor_->finish();
     }
-    signal_event_work();
 }
 
 void EngineRuntime::await_pipeline_drain_if_needed() {
@@ -914,77 +841,12 @@ void EngineRuntime::await_pipeline_drain_if_needed() {
     }
 }
 
-void EngineRuntime::drain_asr_events() {
-    if (!context_ || !context_->contains("asr_events")) {
-        return;
-    }
-
-    try {
-        auto events = context_->get<std::vector<AsrEvent>>("asr_events");
-        for (const auto& event : events) {
-            if (event.result.text.empty()) {
-                continue;
-            }
-            if (event.kind == AsrResultKind::Partial) {
-                if (!first_partial_seen_.exchange(true, std::memory_order_acq_rel)) {
-                    first_partial_time_ = std::chrono::steady_clock::now();
-                }
-            }
-            if (event.kind == AsrResultKind::SegmentFinal || event.kind == AsrResultKind::StreamFinal) {
-                if (!first_final_seen_.exchange(true, std::memory_order_acq_rel)) {
-                    first_final_time_ = std::chrono::steady_clock::now();
-                }
-            }
-            if (!first_token_seen_.exchange(true, std::memory_order_acq_rel)) {
-                first_token_time_ = std::chrono::steady_clock::now();
-            }
-            stats_.asr_results_generated++;
-            if (asr_event_callback_) {
-                asr_event_callback_(event);
-            }
-        }
-        context_->set("asr_events", std::vector<AsrEvent>{});
-    } catch (...) {
-    }
+auto EngineRuntime::make_vad_segment_key(const VadSegment& segment) const -> std::string {
+    return std::format("{}:{}", segment.start_ms, segment.end_ms);
 }
 
-void EngineRuntime::drain_vad_events() {
-    if (!context_) {
-        return;
-    }
-
-    if (context_->contains("vad_segments")) {
-        try {
-            auto segments = context_->get<std::vector<VadSegment>>("vad_segments");
-            if (segments.size() > last_vad_segment_count_) {
-                for (std::size_t i = last_vad_segment_count_; i < segments.size(); ++i) {
-                    if (vad_callback_) {
-                        const auto& segment = segments[i];
-                        vad_callback_(false, segment.start_ms, segment.end_ms);
-                    }
-                }
-                last_vad_segment_count_ = segments.size();
-            }
-        } catch (...) {
-        }
-    }
-
-    if (context_->contains("vad_is_speech")) {
-        try {
-            bool is_speech = context_->get<bool>("vad_is_speech");
-            if (is_speech != last_vad_state_) {
-                if (is_speech && !last_vad_state_) {
-                    stats_.speech_segments_detected++;
-                    const auto start_ms = context_->get_or_default<std::int64_t>("vad_current_start_ms", 0);
-                    if (vad_callback_) {
-                        vad_callback_(true, start_ms, start_ms);
-                    }
-                }
-                last_vad_state_ = is_speech;
-            }
-        } catch (...) {
-        }
-    }
+bool EngineRuntime::record_vad_segment_if_new(const VadSegment& segment) {
+    return emitted_vad_segment_keys_.insert(make_vad_segment_key(segment)).second;
 }
 
 void EngineRuntime::emit_status(const std::string& status) {
@@ -1019,7 +881,6 @@ ProcessingStats EngineRuntime::build_live_stats_snapshot() const {
     auto resource = ResourceMonitor::get_peak();
     snapshot.peak_memory_mb = static_cast<double>(resource.peak_memory_mb);
     snapshot.avg_cpu_percent = resource.cpu_percent;
-    merge_core_timings(snapshot);
     update_time_breakdown(snapshot, now);
     return snapshot;
 }
@@ -1066,26 +927,7 @@ void EngineRuntime::finalize_stats() {
     auto resource = ResourceMonitor::get_peak();
     stats_.peak_memory_mb = static_cast<double>(resource.peak_memory_mb);
     stats_.avg_cpu_percent = resource.cpu_percent;
-    merge_core_timings(stats_);
     update_time_breakdown(stats_, end_time);
-}
-
-void EngineRuntime::merge_core_timings(ProcessingStats& target) const {
-    if (!context_) {
-        return;
-    }
-    const auto& ctx_stats = context_->performance_stats();
-    for (const auto& [op_id, timing] : ctx_stats.core_timings) {
-        if (target.core_timings.find(op_id) == target.core_timings.end()) {
-            target.core_timings[op_id] = timing;
-        }
-    }
-}
-
-void EngineRuntime::signal_event_work() {
-    if (!has_pending_event_work_.exchange(true, std::memory_order_acq_rel)) {
-        event_cv_.notify_one();
-    }
 }
 
 void EngineRuntime::emit_stream_drained_once() {

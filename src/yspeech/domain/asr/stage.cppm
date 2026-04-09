@@ -26,7 +26,10 @@ public:
     void init(const nlohmann::json& config) {
         config_ = config;
         core_name_ = config.value("model_name", std::string("AsrParaformer"));
-        core_pool_size_ = std::max<std::size_t>(1, config.value("__core_pool_size", std::size_t{1}));
+        core_pool_size_ = std::max<std::size_t>(
+            1,
+            config.value("core_pool_size", config.value("__core_pool_size", std::size_t{1}))
+        );
         min_feature_frames_ = config.value("min_new_feature_frames", 8);
         min_first_partial_feature_frames_ = config.value(
             "min_first_partial_feature_frames",
@@ -72,11 +75,11 @@ public:
         {
             std::lock_guard lock(segment->mutex);
             segment_closed = segment->lifecycle == SegmentLifecycle::Closed;
-            if (!segment->feature_ready || segment->features_accumulated.empty()) {
+            if (!segment->feature_ready) {
                 return;
             }
         }
-        snapshot = collect_stream_snapshot(registry, token.stream_id);
+        snapshot = collect_stream_snapshot(runtime, registry, token.stream_id);
         if (snapshot.features.empty()) {
             return;
         }
@@ -224,8 +227,21 @@ private:
         return *core_pool_.at(line_id % core_pool_.size());
     }
 
-    auto collect_stream_snapshot(SegmentRegistry& registry, const std::string& stream_id) const -> StreamSnapshot {
+    auto collect_stream_snapshot(
+        RuntimeContext& runtime,
+        SegmentRegistry& registry,
+        const std::string& stream_id
+    ) const -> StreamSnapshot {
         StreamSnapshot snapshot;
+        {
+            std::scoped_lock lock(runtime.stream_feature_mutex);
+            if (auto it = runtime.stream_feature_snapshots.find(stream_id);
+                it != runtime.stream_feature_snapshots.end()) {
+                snapshot.features = it->second.features;
+                snapshot.feature_version = it->second.version;
+                snapshot.feature_count = it->second.feature_count;
+            }
+        }
         auto segments = registry.snapshot_ordered();
         for (const auto& segment : segments) {
             if (!segment) {
@@ -235,12 +251,9 @@ private:
             if (segment->stream_id != stream_id) {
                 continue;
             }
-            if (!segment->feature_ready || segment->features_accumulated.empty()) {
+            if (!segment->feature_ready) {
                 continue;
             }
-            snapshot.features = segment->features_accumulated;
-            snapshot.feature_version = segment->feature_version;
-            snapshot.feature_count = static_cast<int>(segment->features_accumulated.size());
             if (segment->vad_segment.has_value()) {
                 snapshot.last_segment = segment->vad_segment;
             }
@@ -271,16 +284,7 @@ private:
     }
 
     void maybe_emit_stream_final(PipelineToken& token, RuntimeContext& runtime, SegmentRegistry& registry) {
-        auto snapshot = collect_stream_snapshot(registry, token.stream_id);
-        {
-            std::scoped_lock lock(runtime.stream_feature_mutex);
-            if (auto it = runtime.stream_feature_snapshots.find(token.stream_id);
-                it != runtime.stream_feature_snapshots.end() && it->second.version >= snapshot.feature_version) {
-                snapshot.features = it->second.features;
-                snapshot.feature_version = it->second.version;
-                snapshot.feature_count = it->second.feature_count;
-            }
-        }
+        auto snapshot = collect_stream_snapshot(runtime, registry, token.stream_id);
         if (snapshot.features.empty()) {
             return;
         }
@@ -344,6 +348,11 @@ private:
             state.finalized_stream_feature_version = snapshot.feature_version;
             state.stream_final_emitted = true;
         }
+        {
+            std::scoped_lock lock(runtime.stream_feature_mutex);
+            runtime.stream_feature_snapshots.erase(token.stream_id);
+        }
+        registry.erase_closed();
     }
 
     nlohmann::json config_;

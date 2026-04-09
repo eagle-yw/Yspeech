@@ -68,7 +68,7 @@ sequenceDiagram
 ## 设计要点
 
 1. 底层输入源实现仍在 pipeline 之外，但运行时会把它编译成显式的 `SourceStage`。
-2. 最小流转单位是 `PipelineToken`，而不是共享 `Context` 里的临时键值。
+2. 最小流转单位是 `PipelineToken`，共享运行状态通过 `RuntimeContext` 传递。
 3. 线性段执行模型是“外层 source/event 线程 + `tf::Pipeline`”。
 4. 静态 DAG 的 branch/join 由 `RuntimeDagExecutor` 负责。
 5. `Vad / Feature / Asr` 领域 stage 现在已经与对应 core 按领域靠拢组织。

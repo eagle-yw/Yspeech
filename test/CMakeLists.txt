@@ -3,7 +3,6 @@ enable_testing()
 add_executable(test
     test.cpp
     test_audio.cpp
-    test_error.cpp
     test_audio_buffer.cpp
     test_real_audio.cpp
     test_silero_vad.cpp

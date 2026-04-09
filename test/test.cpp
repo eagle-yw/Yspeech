@@ -3,7 +3,6 @@
 
 import std;
 import yspeech;
-import yspeech.stream_store;
 
 TEST(TestEngine, TestEngine){
     EXPECT_NO_THROW(([] {

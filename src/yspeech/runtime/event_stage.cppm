@@ -18,7 +18,7 @@ public:
         config_ = config;
     }
 
-    void process(PipelineToken& token, RuntimeContext& runtime, SegmentRegistry&) {
+    void process(PipelineToken& token, RuntimeContext& runtime, SegmentRegistry& registry) {
         if (!runtime.emit_event) {
             return;
         }
@@ -56,6 +56,10 @@ public:
                 .asr = token.stream_asr_result,
                 .vad_segment = token.vad_segment
             });
+        }
+
+        if (token.kind == PipelineTokenKind::SegmentFinal || token.stream_final) {
+            registry.erase_closed();
         }
     }
 
