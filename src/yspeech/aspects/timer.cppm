@@ -26,14 +26,14 @@ public:
 
         if (runtime.stats) {
             std::scoped_lock lock(runtime.stats_mutex);
-            runtime.stats->record_operator_time(component_name, duration_ms);
-            runtime.stats->record_operator_effective_call(component_name);
+            runtime.stats->record_core_time(component_name, duration_ms);
+            runtime.stats->record_core_effective_call(component_name);
             if (runtime.run_start_time != std::chrono::steady_clock::time_point{}) {
                 const auto start_ms =
                     std::chrono::duration<double, std::milli>(start - runtime.run_start_time).count();
                 const auto end_ms =
                     std::chrono::duration<double, std::milli>(end - runtime.run_start_time).count();
-                runtime.stats->record_operator_active_window(component_name, start_ms, end_ms);
+                runtime.stats->record_core_active_window(component_name, start_ms, end_ms);
             }
         }
 

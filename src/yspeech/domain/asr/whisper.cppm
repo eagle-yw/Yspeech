@@ -6,11 +6,7 @@ module;
 export module yspeech.domain.asr.whisper;
 
 import std;
-import yspeech.context;
-import yspeech.stream_process;
 import yspeech.domain.asr.base;
-import yspeech.frame_ring;
-import yspeech.stream_store;
 import yspeech.types;
 import yspeech.log;
 
@@ -35,20 +31,9 @@ public:
                  model_path_, task_, detect_language_);
     }
 
-    StreamProcessResult process_stream(Context&, StreamStore&) override {
-        return {};
-    }
-
-    StreamProcessResult flush(Context&, StreamStore&) override {
-        return {};
-    }
-
     void deinit() override {
         session_.reset();
         env_.reset();
-        collected_audio_.clear();
-        collected_samples_ = 0;
-        eos_seen_ = false;
         AsrBase::deinit();
     }
 
@@ -200,9 +185,6 @@ private:
     Ort::MemoryInfo memory_info_{nullptr};
 
     std::unordered_map<int, std::string> id_to_token_;
-    std::vector<float> collected_audio_;
-    std::size_t collected_samples_ = 0;
-    bool eos_seen_ = false;
 };
 
 AsrCoreRegistrar<WhisperCore> whisper_core_registrar("AsrWhisper");

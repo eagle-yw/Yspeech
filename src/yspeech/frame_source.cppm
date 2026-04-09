@@ -116,6 +116,17 @@ private:
     bool stopped_ = false;
 };
 
+export class StreamSource : public MicSource {
+public:
+    explicit StreamSource(std::string stream_id = "stream")
+        : MicSource(std::move(stream_id)) {
+    }
+
+    std::string_view kind() const noexcept override {
+        return "stream";
+    }
+};
+
 export class FileSource : public IFrameSource {
 public:
     explicit FileSource(const std::string& path,

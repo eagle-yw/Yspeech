@@ -23,8 +23,19 @@
   },
   "pipelines": [
     {
+      "id": "source_stage",
+      "name": "Source Stage",
+      "ops": [
+        {
+          "id": "source",
+          "name": "FileSource"
+        }
+      ]
+    },
+    {
       "id": "vad_stage",
       "name": "VAD Stage",
+      "depends_on": ["source_stage"],
       "max_concurrency": 1,
       "ops": [
         {
@@ -42,6 +53,7 @@
     {
       "id": "feature_stage",
       "name": "Feature Stage",
+      "depends_on": ["vad_stage"],
       "max_concurrency": 2,
       "ops": [
         {
@@ -64,6 +76,7 @@
     {
       "id": "asr_stage",
       "name": "ASR Stage",
+      "depends_on": ["feature_stage"],
       "max_concurrency": 2,
       "ops": [
         {

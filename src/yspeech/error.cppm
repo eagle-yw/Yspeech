@@ -24,11 +24,11 @@ export enum class ErrorCode {
     ConfigParseError = 102,
     ConfigValidationError = 103,
     
-    OperatorNotFound = 200,
-    OperatorInitFailed = 201,
-    OperatorProcessFailed = 202,
-    OperatorDeinitFailed = 203,
-    OperatorTimeout = 204,
+    CoreNotFound = 200,
+    CoreInitFailed = 201,
+    CoreProcessFailed = 202,
+    CoreDeinitFailed = 203,
+    CoreTimeout = 204,
     
     ResourceNotFound = 300,
     ResourceLoadFailed = 301,
@@ -51,11 +51,11 @@ export inline std::string error_code_to_string(ErrorCode code) {
         case ErrorCode::ConfigFileNotFound: return "ConfigFileNotFound";
         case ErrorCode::ConfigParseError: return "ConfigParseError";
         case ErrorCode::ConfigValidationError: return "ConfigValidationError";
-        case ErrorCode::OperatorNotFound: return "OperatorNotFound";
-        case ErrorCode::OperatorInitFailed: return "OperatorInitFailed";
-        case ErrorCode::OperatorProcessFailed: return "OperatorProcessFailed";
-        case ErrorCode::OperatorDeinitFailed: return "OperatorDeinitFailed";
-        case ErrorCode::OperatorTimeout: return "OperatorTimeout";
+        case ErrorCode::CoreNotFound: return "CoreNotFound";
+        case ErrorCode::CoreInitFailed: return "CoreInitFailed";
+        case ErrorCode::CoreProcessFailed: return "CoreProcessFailed";
+        case ErrorCode::CoreDeinitFailed: return "CoreDeinitFailed";
+        case ErrorCode::CoreTimeout: return "CoreTimeout";
         case ErrorCode::ResourceNotFound: return "ResourceNotFound";
         case ErrorCode::ResourceLoadFailed: return "ResourceLoadFailed";
         case ErrorCode::ResourceReleaseFailed: return "ResourceReleaseFailed";

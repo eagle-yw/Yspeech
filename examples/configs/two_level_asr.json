@@ -25,8 +25,19 @@
   },
   "pipelines": [
     {
+      "id": "source_stage",
+      "name": "Source Stage",
+      "ops": [
+        {
+          "id": "source",
+          "name": "FileSource"
+        }
+      ]
+    },
+    {
       "id": "vad_stage",
       "name": "VAD Stage",
+      "depends_on": ["source_stage"],
       "max_concurrency": 4,
       "input": {
         "key": "audio_frames",
@@ -50,6 +61,7 @@
     {
       "id": "asr_stage",
       "name": "ASR Stage",
+      "depends_on": ["source_stage"],
       "max_concurrency": 4,
       "input": {
         "key": "audio_frames"

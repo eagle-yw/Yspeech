@@ -33,7 +33,7 @@ public:
             std::max(1, std::min(min_feature_frames_, 4))
         );
         max_decode_feature_frames_ = config.value("max_decode_feature_frames", 0);
-        op_id_ = config.value("__op_id", op_id_);
+        core_id_ = config.value("__core_id", core_id_);
         core_pool_.clear();
         core_pool_.reserve(core_pool_size_);
         for (std::size_t i = 0; i < core_pool_size_; ++i) {
@@ -359,7 +359,7 @@ private:
     std::unordered_map<std::string, StreamAsrState> stream_states_;
     std::mutex stream_state_mutex_;
     ProcessingStats* runtime_stats_ = nullptr;
-    std::string op_id_ = "asr";
+    std::string core_id_ = "asr";
 
     void configure_aspects(const nlohmann::json& config) {
         aspects_.clear();
@@ -389,7 +389,7 @@ private:
             auto params = entry.contains("params") && entry["params"].is_object()
                 ? entry["params"]
                 : nlohmann::json::object();
-            params["__component_name"] = op_id_;
+            params["__component_name"] = core_id_;
             auto capability = CapabilityFactory::get_instance().create_capability(
                 entry["name"].get<std::string>(),
                 params
@@ -406,14 +406,14 @@ private:
         std::vector<std::any> payloads;
         payloads.reserve(aspects_.size());
         for (auto& aspect : aspects_) {
-            payloads.push_back(aspect.before(runtime, op_id_));
+            payloads.push_back(aspect.before(runtime, core_id_));
         }
         return payloads;
     }
 
     void after_aspects(RuntimeContext& runtime, std::vector<std::any> payloads) {
         for (std::size_t i = aspects_.size(); i > 0; --i) {
-            aspects_[i - 1].after(runtime, op_id_, std::move(payloads[i - 1]));
+            aspects_[i - 1].after(runtime, core_id_, std::move(payloads[i - 1]));
         }
     }
 

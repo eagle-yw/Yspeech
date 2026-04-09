@@ -28,7 +28,7 @@ public:
         sample_rate_ = config.value("sample_rate", sample_rate_);
         channels_ = config.value("channels", channels_);
         min_silence_duration_ms_ = config.value("min_silence_duration_ms", min_silence_duration_ms_);
-        op_id_ = config.value("__op_id", op_id_);
+        core_id_ = config.value("__core_id", core_id_);
         core_ = VadCoreFactory::get_instance().create_core(core_name_);
         core_->init(config);
         configure_aspects(config);
@@ -211,7 +211,7 @@ private:
     int sample_rate_ = 16000;
     int channels_ = 1;
     int min_silence_duration_ms_ = 100;
-    std::string op_id_ = "vad";
+    std::string core_id_ = "vad";
     ProcessingStats* runtime_stats_ = nullptr;
 
     void configure_aspects(const nlohmann::json& config) {
@@ -242,7 +242,7 @@ private:
             auto params = entry.contains("params") && entry["params"].is_object()
                 ? entry["params"]
                 : nlohmann::json::object();
-            params["__component_name"] = op_id_;
+            params["__component_name"] = core_id_;
             auto capability = CapabilityFactory::get_instance().create_capability(
                 entry["name"].get<std::string>(),
                 params
@@ -259,14 +259,14 @@ private:
         std::vector<std::any> payloads;
         payloads.reserve(aspects_.size());
         for (auto& aspect : aspects_) {
-            payloads.push_back(aspect.before(runtime, op_id_));
+            payloads.push_back(aspect.before(runtime, core_id_));
         }
         return payloads;
     }
 
     void after_aspects(RuntimeContext& runtime, std::vector<std::any> payloads) {
         for (std::size_t i = aspects_.size(); i > 0; --i) {
-            aspects_[i - 1].after(runtime, op_id_, std::move(payloads[i - 1]));
+            aspects_[i - 1].after(runtime, core_id_, std::move(payloads[i - 1]));
         }
     }
 

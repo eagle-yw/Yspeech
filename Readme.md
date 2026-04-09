@@ -38,6 +38,8 @@ cmake --build build
 
 文档按两类整理，优先从这两份总览开始：
 
+- 仓库当前支持的示例配置统一放在 `examples/configs/`
+
 - 设计文档
   - [设计文档](doc/design.md) - 代码设计、运行链路、配置生效边界
   - [推荐开发基线](doc/recommended-baseline.md) - 当前默认主线、推荐配置与回归测试
@@ -55,6 +57,8 @@ cmake --build build
   - [贡献指南](doc/contributing.md) - 仓库协作约定
 
 ## 最小使用示例
+
+### 使用内置 file source
 
 ```cpp
 import std;
@@ -78,9 +82,43 @@ int main() {
 }
 ```
 
+### 使用 `source.type=stream` 外部推帧
+
+适合 SDK 集成、实时采集接入或自定义上游音频编排：
+
+```cpp
+import std;
+import yspeech.engine;
+
+int main() {
+    yspeech::Engine engine("examples/configs/streaming_paraformer_asr_stream_source.json");
+
+    engine.on_event([](const yspeech::EngineEvent& event) {
+        if (event.asr && event.kind == yspeech::EngineEventKind::ResultStreamFinal) {
+            std::println("{}", event.asr->text);
+        }
+    });
+
+    engine.start();
+
+    engine.push_frame(frame_0);
+    engine.push_frame(frame_1);
+    engine.push_frame(eos_frame);
+
+    engine.stop();
+}
+```
+
+说明：
+
+- `source.type=stream` 会使用独立的 `StreamSource`
+- 这种模式更适合作为程序集成入口
+- `streaming_demo` 主要演示内置 `file/microphone` source，不是 `push_frame(...)` 的最佳入口
+
 ## 当前推荐事实
 
 - 单线流式 ASR 的默认开发基线是 `examples/configs/streaming_paraformer_asr.json`
+- 外部推帧模板是 `examples/configs/streaming_paraformer_asr_stream_source.json`
 - `streaming_demo` 默认就使用这条单线 Taskflow 配置
 - `EngineRuntime` 的流式运行时已经统一切到 Taskflow 主线
 - 新运行时已支持“配置驱动、启动期构图、运行期静态 DAG”的模式
@@ -92,6 +130,8 @@ int main() {
 
 - 线性新运行时：
   [examples/configs/streaming_paraformer_asr.json](/Users/eagle/workspace/Playground/Yspeech/examples/configs/streaming_paraformer_asr.json)
+- 外部推帧：
+  [examples/configs/streaming_paraformer_asr_stream_source.json](/Users/eagle/workspace/Playground/Yspeech/examples/configs/streaming_paraformer_asr_stream_source.json)
 - 静态 DAG + join：
   [examples/configs/streaming_paraformer_asr_dag.json](/Users/eagle/workspace/Playground/Yspeech/examples/configs/streaming_paraformer_asr_dag.json)
 - 静态 DAG + join timeout：

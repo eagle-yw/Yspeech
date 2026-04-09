@@ -1,5 +1,5 @@
 {
-  "name": "Streaming SenseVoice ASR",
+  "name": "Streaming Paraformer ASR (Stream Source)",
   "version": "1.0",
   "log_level": "info",
   "task": "asr",
@@ -9,9 +9,7 @@
     "pipeline_name": "yspeech.taskflow.streaming"
   },
   "source": {
-    "type": "file",
-    "path": "model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/test_wavs/zh.wav",
-    "playback_rate": 0.0
+    "type": "stream"
   },
   "frame": {
     "sample_rate": 16000,
@@ -28,7 +26,7 @@
       "ops": [
         {
           "id": "source",
-          "name": "FileSource"
+          "name": "StreamSource"
         }
       ]
     },
@@ -67,7 +65,8 @@
             "dither": 0,
             "snip_edges": false,
             "lfr_window_size": 7,
-            "lfr_window_shift": 7
+            "lfr_window_shift": 6,
+            "cmvn_file": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/am.mvn"
           }
         }
       ]
@@ -80,16 +79,14 @@
       "ops": [
         {
           "id": "asr",
-          "name": "AsrSenseVoice",
+          "name": "AsrParaformer",
           "params": {
-            "model_path": "model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.onnx",
-            "tokens_path": "model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt",
-            "language": "auto",
-            "use_itn": true,
-            "detect_emotion": true,
-            "sample_rate": 16000,
-            "execution_provider": "cpu",
-            "num_threads": 4
+            "model_path": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx",
+            "tokens_path": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt",
+            "language": "zh",
+            "num_threads": 2,
+            "min_new_feature_frames": 24,
+            "min_first_partial_feature_frames": 12
           }
         }
       ]

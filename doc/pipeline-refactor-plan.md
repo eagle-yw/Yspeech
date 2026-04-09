@@ -51,7 +51,7 @@ This document tracks the runtime refactor that unified streaming execution on th
    - the first partial is allowed as soon as the first usable feature window is available
    - later partials still respect `min_new_feature_frames`
    - EOS now force-closes any active segment so the final segment is not dropped
-7. Stage/core timing from the Taskflow path is now reported into operator-level performance stats.
+7. Stage/core timing from the Taskflow path is now reported into core-level performance stats.
 8. Taskflow stage-owned cores are protected against concurrent access to keep multi-run benchmarks stable.
 9. Recipe/build time preserves stage-level DAG metadata so the runtime can execute a static configurable DAG without losing configuration-driven construction.
 10. `RuntimeDagExecutor` now supports `Branch`, `Join`, `join_policy`, and lightweight `join_timeout_ms`.

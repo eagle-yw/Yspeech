@@ -129,6 +129,7 @@ struct DemoConfigProfile {
     std::string name = "unknown";
     std::string task = "asr";
     std::string mode = "streaming";
+    std::string source_type = "microphone";
     DemoProfileKind kind = DemoProfileKind::UnsupportedOther;
     bool uses_multi_path_graph = false;
     bool has_asr = false;
@@ -148,6 +149,9 @@ auto inspect_demo_config(const std::string& config_path) -> DemoConfigProfile {
     profile.name = config.value("name", profile.name);
     profile.task = config.value("task", profile.task);
     profile.mode = config.value("mode", profile.mode);
+    if (config.contains("source") && config["source"].is_object()) {
+        profile.source_type = config["source"].value("type", profile.source_type);
+    }
 
     if (config.contains("pipelines") && config["pipelines"].is_array()) {
         for (const auto& stage : config["pipelines"]) {
@@ -194,6 +198,11 @@ void validate_demo_profile(const DemoConfigProfile& profile) {
     if (profile.kind == DemoProfileKind::UnsupportedOther) {
         throw std::invalid_argument(
             "streaming_demo 当前只支持 streaming ASR 或 VAD-only 配置"
+        );
+    }
+    if (profile.source_type == "stream") {
+        throw std::invalid_argument(
+            "streaming_demo 主要演示内置 file/microphone source；source.type=stream 请使用 Engine::push_frame(...) 集成入口"
         );
     }
 }
@@ -584,12 +593,12 @@ int main(int argc, char* argv[]) {
         }
 
         MetricAgg processing_ms;
-        MetricAgg non_operator_ms;
-        MetricAgg non_operator_share;
+        MetricAgg non_core_ms;
+        MetricAgg non_core_share;
         MetricAgg first_partial_ms;
         MetricAgg first_final_ms;
         MetricAgg drain_after_eof_ms;
-        MetricAgg operator_share;
+        MetricAgg core_share;
         MetricAgg rtf;
         MetricAgg stop_overhead_ms;
         MetricAgg stop_monitor_ms;
@@ -611,12 +620,12 @@ int main(int argc, char* argv[]) {
         for (int i = 0; i < opts.benchmark_runs; ++i) {
             auto run = run_once(opts, false);
             processing_ms.add(run.stats.total_processing_time_ms);
-            non_operator_ms.add(run.stats.non_operator_time_ms);
-            non_operator_share.add(run.stats.non_operator_time_percent);
+            non_core_ms.add(run.stats.non_core_time_ms);
+            non_core_share.add(run.stats.non_core_time_percent);
             first_partial_ms.add(run.stats.time_to_first_partial_ms);
             first_final_ms.add(run.stats.time_to_first_final_ms);
             drain_after_eof_ms.add(run.stats.drain_after_eof_ms);
-            operator_share.add(run.stats.operator_time_percent);
+            core_share.add(run.stats.core_time_percent);
             rtf.add(run.stats.rtf);
             stop_overhead_ms.add(run.stats.stop_overhead_ms);
             stop_monitor_ms.add(run.stats.stop_resource_monitor_ms);
@@ -638,23 +647,30 @@ int main(int argc, char* argv[]) {
                        i + 1,
                        opts.benchmark_runs,
                        run.stats.total_processing_time_ms,
-                       run.stats.non_operator_time_ms,
-                       run.stats.non_operator_time_percent,
+                       run.stats.non_core_time_ms,
+                       run.stats.non_core_time_percent,
                        run.stats.drain_after_eof_ms);
         }
 
         std::print("\n=== Benchmark Summary ===\n");
+        std::print("\nCore Metrics:\n");
         std::print("┌──────────────────────┬────────────┬────────────┬────────────┬────────────┬───────┐\n");
         std::print("│ Metric               │ Mean       │ StdDev     │ Min        │ Max        │ Unit  │\n");
         std::print("├──────────────────────┼────────────┼────────────┼────────────┼────────────┼───────┤\n");
         print_metric_row("Processing Time", processing_ms, "ms");
-        print_metric_row("Non-Operator Time", non_operator_ms, "ms");
-        print_metric_row("Non-Operator Share", non_operator_share, "%");
         print_metric_row("First Partial", first_partial_ms, "ms");
         print_metric_row("First Final", first_final_ms, "ms");
         print_metric_row("Drain After EOF", drain_after_eof_ms, "ms");
-        print_metric_row("Operator Share", operator_share, "%");
         print_metric_row("RTF", rtf, "-");
+        print_metric_row("Core Share", core_share, "%");
+        print_metric_row("Non-Core Share", non_core_share, "%");
+        std::print("└──────────────────────┴────────────┴────────────┴────────────┴────────────┴───────┘\n");
+
+        std::print("\nDiagnostic Metrics:\n");
+        std::print("┌──────────────────────┬────────────┬────────────┬────────────┬────────────┬───────┐\n");
+        std::print("│ Metric               │ Mean       │ StdDev     │ Min        │ Max        │ Unit  │\n");
+        std::print("├──────────────────────┼────────────┼────────────┼────────────┼────────────┼───────┤\n");
+        print_metric_row("Non-Core Wall Time", non_core_ms, "ms");
         print_metric_row("Stop Overhead", stop_overhead_ms, "ms");
         print_metric_row("Stop.Monitor", stop_monitor_ms, "ms");
         print_metric_row("Stop.SourceJoin", stop_source_join_ms, "ms");

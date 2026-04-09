@@ -37,7 +37,17 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
   },
   "pipelines": [
     {
+      "id": "source_stage",
+      "ops": [
+        {
+          "id": "source",
+          "name": "FileSource"
+        }
+      ]
+    },
+    {
       "id": "asr_stage",
+      "depends_on": ["source_stage"],
       "max_concurrency": 4,
       "ops": [
         {
@@ -83,7 +93,9 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
 说明：
 
 - `type=file` 会创建 `FileSource`
-- `type=microphone` 和 `type=stream` 都会回落到默认 `MicSource`
+- `type=microphone` 会使用默认 `MicSource`
+- `type=stream` 会使用独立的 `StreamSource`
+- 顶层 `source` 在运行时会被编译成内部的 `SourceStage`
 - `EngineConfigOptions.audio_path` 会覆盖 `source.path`
 
 ## frame
@@ -156,6 +168,7 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
 - `input`/`output` 字段当前会被解析保存
 - 但主执行链路没有基于这些字段建立完整 stage 间数据路由
 - 它们更适合当作配置语义说明，而不是当前稳定功能承诺
+- 如果没有显式声明 `source_stage`，运行时会根据顶层 `source` 自动注入一个内部 `SourceStage`
 - `depends_on` 会在启动期编译成静态 DAG，运行期结构不再变化
 - 线性子路径由 `tf::Pipeline` 执行，`Branch/Join` 由 `RuntimeDagExecutor` 处理
 
@@ -184,7 +197,7 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
   "depends_on": ["vad_stage", "feature_stage"],
   "join_policy": "all_of",
   "ops": [
-    { "id": "merge", "name": "UnknownMerge" }
+    { "id": "merge", "name": "JoinBarrier" }
   ]
 }
 ```
@@ -232,7 +245,16 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
 - `AsrSenseVoice`
 - `AsrWhisper`
 
-如果配置里写了别的名字，会在 stage build 阶段报 `Unknown operator type`。
+如果某个领域 stage 需要绑定处理 core，但配置里写了未注册的名字，会在 stage build 阶段报“未知 core 名称”这一类错误。
+
+需要区分两类 `ops[].name`：
+
+- 领域处理节点
+  - 例如 `SileroVad`、`KaldiFbank`、`AsrParaformer`
+  - 这些名字必须能在对应的 `VadCoreFactory`、`FeatureCoreFactory`、`AsrCoreFactory` 中找到
+- 结构化 DAG 节点标签
+  - 例如示例里的 `PassThroughSource`、`PassThroughBranch`、`JoinBarrier`
+  - 这些名字主要用于表达静态 DAG 结构，不要求映射到某个领域 core
 
 ## Capability 配置约定
 

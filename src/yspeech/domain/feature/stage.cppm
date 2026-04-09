@@ -25,7 +25,7 @@ public:
     void init(const nlohmann::json& config) {
         config_ = config;
         core_name_ = config.value("core_name", std::string("KaldiFbank"));
-        op_id_ = config.value("__op_id", op_id_);
+        core_id_ = config.value("__core_id", core_id_);
         configure_aspects(config);
         configure_capabilities(config);
     }
@@ -133,7 +133,7 @@ private:
     std::vector<CapabilityIface> pre_capabilities_;
     std::vector<CapabilityIface> post_capabilities_;
     ProcessingStats* config_runtime_stats_ = nullptr;
-    std::string op_id_ = "fbank";
+    std::string core_id_ = "fbank";
     std::mutex core_mutex_;
 
     void configure_aspects(const nlohmann::json& config) {
@@ -164,7 +164,7 @@ private:
             auto params = entry.contains("params") && entry["params"].is_object()
                 ? entry["params"]
                 : nlohmann::json::object();
-            params["__component_name"] = op_id_;
+            params["__component_name"] = core_id_;
             auto capability = CapabilityFactory::get_instance().create_capability(
                 entry["name"].get<std::string>(),
                 params
@@ -181,14 +181,14 @@ private:
         std::vector<std::any> payloads;
         payloads.reserve(aspects_.size());
         for (auto& aspect : aspects_) {
-            payloads.push_back(aspect.before(runtime, op_id_));
+            payloads.push_back(aspect.before(runtime, core_id_));
         }
         return payloads;
     }
 
     void after_aspects(RuntimeContext& runtime, std::vector<std::any> payloads) {
         for (std::size_t i = aspects_.size(); i > 0; --i) {
-            aspects_[i - 1].after(runtime, op_id_, std::move(payloads[i - 1]));
+            aspects_[i - 1].after(runtime, core_id_, std::move(payloads[i - 1]));
         }
     }
 

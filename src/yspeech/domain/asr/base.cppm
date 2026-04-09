@@ -5,10 +5,7 @@ module;
 export module yspeech.domain.asr.base;
 
 import std;
-import yspeech.context;
-import yspeech.stream_process;
 import yspeech.log;
-import yspeech.stream_store;
 import yspeech.types;
 
 namespace yspeech {
@@ -30,10 +27,10 @@ public:
         if (config.contains("output_key")) {
             output_key_ = config["output_key"].get<std::string>();
         }
-        if (config.contains("__op_id")) {
-            operator_id_ = config["__op_id"].get<std::string>();
+        if (config.contains("__core_id")) {
+            core_id_ = config["__core_id"].get<std::string>();
         } else {
-            operator_id_ = output_key_;
+            core_id_ = output_key_;
         }
         reader_key_ = output_key_ + "_reader";
         if (config.contains("reader_key")) {
@@ -74,12 +71,6 @@ public:
                  model_path_, sample_rate_, language_);
     }
 
-    virtual StreamProcessResult process_stream(Context& ctx, StreamStore& store) = 0;
-
-    virtual StreamProcessResult flush(Context&, StreamStore&) {
-        return {};
-    }
-
     virtual void deinit() {
         log_info("ASR Base deinitialized");
     }
@@ -90,7 +81,7 @@ protected:
     std::string input_frame_key_ = "audio_frames";
     std::string reader_key_ = "asr_reader";
     std::string output_key_ = "asr";
-    std::string operator_id_ = "asr";
+    std::string core_id_ = "asr";
     int sample_rate_ = 16000;
     std::string language_ = "zh";
     bool use_gpu_ = false;

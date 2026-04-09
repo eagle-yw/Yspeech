@@ -1,6 +1,7 @@
 # Yspeech 配置示例
 
 这里放的是仓库里当前建议参考的配置文件，已经按“默认主线 / DAG 验证 / 其他流式变体 / 模板参考”整理过。
+根目录旧 `configs/` 已移除，示例配置统一以当前目录为准。
 
 ## 默认主线
 
@@ -9,6 +10,7 @@
 | 文件 | 说明 |
 |------|------|
 | `streaming_paraformer_asr.json` | 当前推荐的单线流式 ASR 主线 |
+| `streaming_paraformer_asr_stream_source.json` | 单线流式 ASR + `source.type=stream` 外部推帧示例 |
 | `streaming_paraformer_asr_capabilities.json` | 单线流式 ASR + capability 示例 |
 | `offline_paraformer_asr.json` | 离线 ParaFormer，中文识别 |
 | `offline_sensevoice_asr.json` | 离线 SenseVoice，多语言识别 |
@@ -40,21 +42,21 @@
 - `task = asr`
 - `mode = offline`
 - `source.type = file`
-- 单 stage：`KaldiFbank -> AsrParaformer`
+- 单路径静态 DAG：`FileSource -> (KaldiFbank -> AsrParaformer)`
 
 ### `offline_sensevoice_asr.json`
 
 - `task = asr`
 - `mode = offline`
 - `source.type = file`
-- 单 stage：`KaldiFbank -> AsrSenseVoice`
+- 单路径静态 DAG：`FileSource -> (KaldiFbank -> AsrSenseVoice)`
 
 ### `streaming_paraformer_asr.json`
 
 - `task = asr`
 - `mode = streaming`
 - `source.type = file`
-- 三段结构：`SileroVad -> KaldiFbank -> AsrParaformer`
+- 单路径静态 DAG：`FileSource -> SileroVad -> KaldiFbank -> AsrParaformer`
 - 当前推荐的单线流式 ASR 开发和回归基线
 
 ### `streaming_paraformer_asr_capabilities.json`
@@ -67,18 +69,27 @@
   - 额外挂一个 `StatusCapability`
 - 适合验证 capability 执行链和配置写法
 
+### `streaming_paraformer_asr_stream_source.json`
+
+- 基于单线流式 ASR 主线
+- `source.type = stream`
+- 显式 `source_stage` 使用 `StreamSource`
+- 适合 `Engine::push_frame(...)` 外部推帧场景
+- 运行时会创建独立的 `StreamSource`
+- 更适合作为 SDK/集成模板，而不是直接给 `streaming_demo` 使用
+
 ### `streaming_sensevoice_asr.json`
 
 - `task = asr`
 - `mode = streaming`
 - `source.type = file`
 - 默认已补齐 `source.path`
-- 三段结构：`SileroVad -> KaldiFbank -> AsrSenseVoice`
+- 单路径静态 DAG：`FileSource -> SileroVad -> KaldiFbank -> AsrSenseVoice`
 - 对应 SenseVoice 线性流式入口
 
 ### `streaming_paraformer_asr_dag.json`
 
-- 使用静态 DAG：`capture -> vad -> feature`，同时保留 `vad -> merge` 支路
+- 使用静态 DAG：`FileSource -> SileroVad -> KaldiFbank`，同时保留 `vad -> merge` 支路
 - `merge_stage` 使用 `join_policy = all_of`
 - `Vad / Feature / ASR` 参数沿用当前 Taskflow 主线口径
 - `asr_stage` 在 join 后继续处理
@@ -103,7 +114,7 @@
 - `task = vad`
 - `mode = streaming`
 - `source.type = microphone`
-- 单 stage：`SileroVad`
+- 单路径静态 DAG：`MicrophoneSource -> SileroVad`
 
 ## 使用方式
 
@@ -118,6 +129,14 @@
   examples/configs/streaming_paraformer_asr.json \
   model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
   0.0
+```
+
+```cpp
+yspeech::Engine engine("examples/configs/streaming_paraformer_asr_stream_source.json");
+engine.start();
+engine.push_frame(frame);
+engine.push_frame(eos_frame);
+engine.stop();
 ```
 
 ```bash

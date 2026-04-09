@@ -113,7 +113,7 @@ auto make_streaming_branching_config(const std::string& audio_path) -> nlohmann:
             {"id", "capture_stage"},
             {"ops", {{
                 {"id", "capture"},
-                {"name", "UnknownSource"}
+                {"name", "PassThroughSource"}
             }}}
         },
         {
@@ -149,7 +149,7 @@ auto make_streaming_branching_config(const std::string& audio_path) -> nlohmann:
             {"depends_on", {"vad_stage"}},
             {"ops", {{
                 {"id", "speaker"},
-                {"name", "UnknownSpeaker"}
+                {"name", "PassThroughBranch"}
             }}}
         },
         {
@@ -178,7 +178,7 @@ auto make_streaming_joining_config(const std::string& audio_path) -> nlohmann::j
             {"id", "capture_stage"},
             {"ops", {{
                 {"id", "capture"},
-                {"name", "UnknownSource"}
+                {"name", "PassThroughSource"}
             }}}
         },
         {
@@ -215,7 +215,7 @@ auto make_streaming_joining_config(const std::string& audio_path) -> nlohmann::j
             {"join_policy", "all_of"},
             {"ops", {{
                 {"id", "merge"},
-                {"name", "UnknownMerge"}
+                {"name", "JoinBarrier"}
             }}}
         },
         {
@@ -244,6 +244,15 @@ auto make_streaming_join_timeout_config(const std::string& audio_path) -> nlohma
             stage["join_timeout_ms"] = 0;
         }
     }
+    return config;
+}
+
+auto make_streaming_joining_stream_source_config() -> nlohmann::json {
+    auto config = make_streaming_joining_config("");
+    config["name"] = "streaming_paraformer_dag_join_stream_source";
+    config["source"] = {
+        {"type", "stream"}
+    };
     return config;
 }
 
@@ -337,6 +346,38 @@ void expect_streaming_join_timeout_pipeline_has_asr_events(const fs::path& audio
 
     engine.start();
     engine.finish();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!engine.input_eof_reached() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    engine.stop();
+
+    EXPECT_TRUE(engine.input_eof_reached());
+    EXPECT_FALSE(events.empty());
+    const auto has_asr_event = std::ranges::any_of(events, [](const yspeech::EngineEvent& event) {
+        return event.kind == yspeech::EngineEventKind::ResultPartial ||
+               event.kind == yspeech::EngineEventKind::ResultSegmentFinal ||
+               event.kind == yspeech::EngineEventKind::ResultStreamFinal;
+    });
+    EXPECT_TRUE(has_asr_event);
+}
+
+void expect_streaming_join_pipeline_stream_source_has_asr_events(const fs::path& audio_path) {
+    yspeech::Engine engine(make_streaming_joining_stream_source_config());
+    std::vector<yspeech::EngineEvent> events;
+    engine.on_event([&](const yspeech::EngineEvent& event) {
+        events.push_back(event);
+    });
+
+    engine.start();
+
+    yspeech::FileSource feeder(audio_path.string(), "stream_feed", 0.0);
+    yspeech::AudioFramePtr frame;
+    while (feeder.next(frame) && frame) {
+        engine.push_frame(frame);
+    }
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (!engine.input_eof_reached() && std::chrono::steady_clock::now() < deadline) {
@@ -510,4 +551,13 @@ TEST(TestAsrRealAudio, StreamingEngineJoinTimeoutPipelineSmoke) {
     }
 
     expect_streaming_join_timeout_pipeline_has_asr_events(audio_path);
+}
+
+TEST(TestAsrRealAudio, StreamingEngineJoiningPipelineStreamSourceSmoke) {
+    const auto audio_path = sample_audio_path();
+    if (audio_path.empty() || !paraformer_assets_exist()) {
+        GTEST_SKIP() << "Streaming join stream-source assets not found";
+    }
+
+    expect_streaming_join_pipeline_stream_source_has_asr_events(audio_path);
 }

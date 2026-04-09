@@ -18,13 +18,13 @@ import yspeech.runtime.segment_registry;
 import yspeech.runtime.runtime_context;
 import yspeech.runtime.token;
 import yspeech.runtime.event_stage;
+import yspeech.domain.source.stage;
 import yspeech.domain.vad.stage;
 import yspeech.domain.feature.stage;
 import yspeech.domain.asr.stage;
 import yspeech.stream_store;
 import yspeech.types;
 import yspeech.log;
-import yspeech.performance_alert;
 import yspeech.resource_monitor;
 
 namespace yspeech {
@@ -33,7 +33,7 @@ namespace {
 
 auto build_stage_capabilities(
     const PipelineConfig& pipeline_config,
-    const OperatorConfig& op_config
+    const CoreConfig& core_config
 ) -> nlohmann::json {
     nlohmann::json merged = nlohmann::json::array();
 
@@ -55,7 +55,7 @@ auto build_stage_capabilities(
     };
 
     append_capabilities(pipeline_config.capabilities());
-    append_capabilities(op_config.capabilities);
+    append_capabilities(core_config.capabilities);
     return merged;
 }
 
@@ -112,6 +112,7 @@ private:
     std::optional<SegmentRegistry> segment_registry_;
     std::unique_ptr<PipelineExecutor> pipeline_executor_;
     std::unique_ptr<RuntimeDagExecutor> runtime_dag_executor_;
+    std::optional<SourceStage> source_stage_;
     std::optional<VadStage> vad_stage_;
     std::optional<FeatureStage> feature_stage_;
     std::optional<AsrStage> asr_stage_;
@@ -157,7 +158,6 @@ private:
     StatusCallback status_callback_;
     PerformanceCallback performance_callback_;
     AlertCallback alert_callback_;
-    PerformanceAlerter alerter_;
     std::vector<float> pending_samples_;
     std::int64_t next_push_pts_ms_ = 0;
     std::atomic<bool> has_input_{false};
@@ -166,7 +166,6 @@ private:
 
     void load_config();
     void init_components();
-    void init_alerting();
     auto create_frame_source_from_config() -> std::shared_ptr<IFrameSource>;
     void store_frame(AudioFramePtr frame);
     void ingest_frame(AudioFramePtr frame);
@@ -176,7 +175,7 @@ private:
     void emit_alert(const std::string& alert_id, const std::string& message);
     void emit_performance_if_due();
     void finalize_stats();
-    void merge_operator_timings(ProcessingStats& target) const;
+    void merge_core_timings(ProcessingStats& target) const;
     void update_time_breakdown(ProcessingStats& target, std::chrono::steady_clock::time_point now) const;
     void signal_event_work();
     void emit_stream_drained_once();
@@ -423,6 +422,9 @@ void EngineRuntime::stop() {
     stop_event_join_ms_ = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - phase_start).count();
 
+    if (source_stage_) {
+        source_stage_->deinit();
+    }
     if (vad_stage_) {
         vad_stage_->deinit();
     }
@@ -438,7 +440,6 @@ void EngineRuntime::stop() {
     if (performance_callback_) {
         performance_callback_(stats_);
     }
-    alerter_.check(stats_);
     emit_status("stopped");
 
     log_info("Engine runtime stopped");
@@ -551,7 +552,7 @@ void EngineRuntime::on_alert(AlertCallback callback) {
 
 ProcessingStats EngineRuntime::get_stats() const {
     auto merged = stats_;
-    merge_operator_timings(merged);
+    merge_core_timings(merged);
     return merged;
 }
 
@@ -608,16 +609,44 @@ void EngineRuntime::init_components() {
             pipeline_executor_->configure(builder_config, *pipeline_runtime_context_, *segment_registry_);
         }
 
+        source_stage_.emplace();
         vad_stage_.emplace();
         feature_stage_.emplace();
         asr_stage_.emplace();
         event_stage_.emplace();
 
+        if (const auto* stage = builder_config.recipe.stage_by_role(PipelineStageRole::Source); stage) {
+            nlohmann::json params = nlohmann::json::object();
+            if (stage->stage_id == "source_stage") {
+                if (config_.contains("source") && config_["source"].is_object()) {
+                    params = config_["source"];
+                }
+                params["__core_id"] = "source";
+                params["core_name"] = stage->core_names.empty()
+                    ? nlohmann::json("PassThroughSource")
+                    : nlohmann::json(stage->core_names.front());
+                params["capabilities"] = nlohmann::json::array();
+            } else {
+                for (const auto& cfg : pipeline_config_.stages()) {
+                    if (cfg.id() == stage->stage_id && !cfg.ops().empty()) {
+                        params = cfg.ops().front().params.is_null()
+                            ? nlohmann::json::object()
+                            : cfg.ops().front().params;
+                        params["__core_id"] = cfg.ops().front().id;
+                        params["core_name"] = cfg.ops().front().name;
+                        params["capabilities"] = build_stage_capabilities(pipeline_config_, cfg.ops().front());
+                        break;
+                    }
+                }
+            }
+            source_stage_->init(params);
+        }
+
         for (const auto& cfg : pipeline_config_.stages()) {
             if (const auto* stage = builder_config.recipe.stage_by_role(PipelineStageRole::Vad);
                 stage && cfg.id() == stage->stage_id && !cfg.ops().empty()) {
                 auto params = cfg.ops().front().params.is_null() ? nlohmann::json::object() : cfg.ops().front().params;
-                params["__op_id"] = cfg.ops().front().id;
+                params["__core_id"] = cfg.ops().front().id;
                 params["core_name"] = cfg.ops().front().name;
                 params["capabilities"] = build_stage_capabilities(pipeline_config_, cfg.ops().front());
                 vad_stage_->init(params);
@@ -626,7 +655,7 @@ void EngineRuntime::init_components() {
             if (const auto* stage = builder_config.recipe.stage_by_role(PipelineStageRole::Feature);
                 stage && cfg.id() == stage->stage_id && !cfg.ops().empty()) {
                 auto params = cfg.ops().front().params.is_null() ? nlohmann::json::object() : cfg.ops().front().params;
-                params["__op_id"] = cfg.ops().front().id;
+                params["__core_id"] = cfg.ops().front().id;
                 params["core_name"] = cfg.ops().front().name;
                 params["capabilities"] = build_stage_capabilities(pipeline_config_, cfg.ops().front());
                 feature_stage_->init(params);
@@ -635,7 +664,7 @@ void EngineRuntime::init_components() {
             if (const auto* stage = builder_config.recipe.stage_by_role(PipelineStageRole::Asr);
                 stage && cfg.id() == stage->stage_id && !cfg.ops().empty()) {
                 auto params = cfg.ops().front().params.is_null() ? nlohmann::json::object() : cfg.ops().front().params;
-                params["__op_id"] = cfg.ops().front().id;
+                params["__core_id"] = cfg.ops().front().id;
                 params["__core_pool_size"] = builder_config.num_lines;
                 params["model_name"] = cfg.ops().front().name;
                 params["capabilities"] = build_stage_capabilities(pipeline_config_, cfg.ops().front());
@@ -678,6 +707,11 @@ void EngineRuntime::init_components() {
                 });
             }
         };
+        auto source_callback = [this](PipelineToken& token, RuntimeContext& runtime, SegmentRegistry& registry) {
+            if (source_stage_) {
+                source_stage_->process(token, runtime, registry);
+            }
+        };
         auto vad_callback = [this](PipelineToken& token, RuntimeContext& runtime, SegmentRegistry& registry) {
             if (vad_stage_) {
                 vad_stage_->process(token, runtime, registry);
@@ -700,20 +734,29 @@ void EngineRuntime::init_components() {
         };
 
         if (runtime_dag_executor_) {
+            runtime_dag_executor_->set_stage_callback(PipelineStageRole::Source, source_callback);
             runtime_dag_executor_->set_stage_callback(PipelineStageRole::Vad, vad_callback);
             runtime_dag_executor_->set_stage_callback(PipelineStageRole::Feature, feature_callback);
             runtime_dag_executor_->set_stage_callback(PipelineStageRole::Asr, asr_callback);
             runtime_dag_executor_->set_stage_callback(PipelineStageRole::Event, event_callback);
         } else if (pipeline_executor_) {
+            pipeline_executor_->set_source_stage(source_callback);
             pipeline_executor_->set_vad_stage(vad_callback);
             pipeline_executor_->set_feature_stage(feature_callback);
             pipeline_executor_->set_asr_stage(asr_callback);
             pipeline_executor_->set_event_stage(event_callback);
         }
-        init_alerting();
-
         stream_store_->init_audio_ring(frame_config_.audio_frame_key, frame_config_.ring_capacity_frames);
-        default_frame_source_ = std::make_shared<MicSource>("stream");
+        std::string source_type = "microphone";
+        if (config_.contains("source") && config_["source"].is_object() &&
+            config_["source"].contains("type") && config_["source"]["type"].is_string()) {
+            source_type = config_["source"]["type"].get<std::string>();
+        }
+        if (source_type == "stream") {
+            default_frame_source_ = std::make_shared<StreamSource>("stream");
+        } else {
+            default_frame_source_ = std::make_shared<MicSource>("stream");
+        }
         
         auto configured_source = create_frame_source_from_config();
         if (configured_source) {
@@ -761,26 +804,17 @@ auto EngineRuntime::create_frame_source_from_config() -> std::shared_ptr<IFrameS
     }
     
     if (type == "microphone") {
-        log_info("Using default microphone source");
-        return nullptr;
+        log_info("Using dedicated microphone source");
+        return default_frame_source_;
     }
     
     if (type == "stream") {
-        log_info("Using stream source (default MicSource)");
-        return nullptr;
+        log_info("Using dedicated stream source");
+        return default_frame_source_;
     }
     
     log_warn("Unknown source type: {}", type);
     return nullptr;
-}
-
-void EngineRuntime::init_alerting() {
-    alerter_.clear_rules();
-    alerter_.add_rule(AlertRule::rtf_high(1.0));
-    alerter_.add_rule(AlertRule::memory_high(500.0));
-    alerter_.set_callback([this](const std::string& alert_id, const std::string& message) {
-        emit_alert(alert_id, message);
-    });
 }
 
 void EngineRuntime::store_frame(AudioFramePtr frame) {
@@ -985,7 +1019,7 @@ ProcessingStats EngineRuntime::build_live_stats_snapshot() const {
     auto resource = ResourceMonitor::get_peak();
     snapshot.peak_memory_mb = static_cast<double>(resource.peak_memory_mb);
     snapshot.avg_cpu_percent = resource.cpu_percent;
-    merge_operator_timings(snapshot);
+    merge_core_timings(snapshot);
     update_time_breakdown(snapshot, now);
     return snapshot;
 }
@@ -1005,7 +1039,6 @@ void EngineRuntime::emit_performance_if_due() {
     if (performance_callback_) {
         performance_callback_(snapshot);
     }
-    alerter_.check(snapshot);
 }
 
 void EngineRuntime::finalize_stats() {
@@ -1033,18 +1066,18 @@ void EngineRuntime::finalize_stats() {
     auto resource = ResourceMonitor::get_peak();
     stats_.peak_memory_mb = static_cast<double>(resource.peak_memory_mb);
     stats_.avg_cpu_percent = resource.cpu_percent;
-    merge_operator_timings(stats_);
+    merge_core_timings(stats_);
     update_time_breakdown(stats_, end_time);
 }
 
-void EngineRuntime::merge_operator_timings(ProcessingStats& target) const {
+void EngineRuntime::merge_core_timings(ProcessingStats& target) const {
     if (!context_) {
         return;
     }
     const auto& ctx_stats = context_->performance_stats();
-    for (const auto& [op_id, timing] : ctx_stats.operator_timings) {
-        if (target.operator_timings.find(op_id) == target.operator_timings.end()) {
-            target.operator_timings[op_id] = timing;
+    for (const auto& [op_id, timing] : ctx_stats.core_timings) {
+        if (target.core_timings.find(op_id) == target.core_timings.end()) {
+            target.core_timings[op_id] = timing;
         }
     }
 }
@@ -1064,22 +1097,52 @@ void EngineRuntime::emit_stream_drained_once() {
 }
 
 void EngineRuntime::update_time_breakdown(ProcessingStats& target, std::chrono::steady_clock::time_point now) const {
-    double operator_total_ms = 0.0;
-    for (const auto& [op_id, timing] : target.operator_timings) {
+    double core_total_ms = 0.0;
+    std::vector<std::pair<double, double>> core_active_intervals;
+    for (const auto& [op_id, timing] : target.core_timings) {
         (void)op_id;
-        operator_total_ms += timing.total_time_ms;
+        core_total_ms += timing.total_time_ms;
+        core_active_intervals.insert(
+            core_active_intervals.end(),
+            timing.active_intervals_ms.begin(),
+            timing.active_intervals_ms.end()
+        );
     }
 
-    target.operator_total_time_ms = operator_total_ms;
-    const double operator_share_basis_ms = std::min(operator_total_ms, target.total_processing_time_ms);
-    target.non_operator_time_ms = std::max(0.0, target.total_processing_time_ms - operator_share_basis_ms);
+    target.core_total_time_ms = core_total_ms;
+
+    double core_active_ms = 0.0;
+    if (!core_active_intervals.empty()) {
+        std::sort(core_active_intervals.begin(), core_active_intervals.end());
+        std::vector<std::pair<double, double>> merged;
+        merged.reserve(core_active_intervals.size());
+        for (const auto& interval : core_active_intervals) {
+            if (!(interval.second > interval.first)) {
+                continue;
+            }
+            if (merged.empty() || interval.first > merged.back().second) {
+                merged.push_back(interval);
+            } else {
+                merged.back().second = std::max(merged.back().second, interval.second);
+            }
+        }
+        for (const auto& interval : merged) {
+            core_active_ms += interval.second - interval.first;
+        }
+    } else {
+        core_active_ms = std::min(core_total_ms, target.total_processing_time_ms);
+    }
+
+    core_active_ms = std::min(core_active_ms, target.total_processing_time_ms);
+    target.core_active_time_ms = core_active_ms;
+    target.non_core_time_ms = std::max(0.0, target.total_processing_time_ms - core_active_ms);
 
     if (target.total_processing_time_ms > 0.0) {
-        target.operator_time_percent = operator_share_basis_ms / target.total_processing_time_ms * 100.0;
-        target.non_operator_time_percent = target.non_operator_time_ms / target.total_processing_time_ms * 100.0;
+        target.core_time_percent = core_active_ms / target.total_processing_time_ms * 100.0;
+        target.non_core_time_percent = target.non_core_time_ms / target.total_processing_time_ms * 100.0;
     } else {
-        target.operator_time_percent = 0.0;
-        target.non_operator_time_percent = 0.0;
+        target.core_time_percent = 0.0;
+        target.non_core_time_percent = 0.0;
     }
 
     if (first_chunk_seen_.load(std::memory_order_acquire)) {

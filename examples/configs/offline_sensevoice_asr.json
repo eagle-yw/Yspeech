@@ -14,8 +14,19 @@
   },
   "pipelines": [
     {
+      "id": "source_stage",
+      "name": "Source Stage",
+      "ops": [
+        {
+          "id": "source",
+          "name": "FileSource"
+        }
+      ]
+    },
+    {
       "id": "asr_stage",
       "name": "SenseVoice Recognition Stage",
+      "depends_on": ["source_stage"],
       "max_concurrency": 1,
       "input": {
         "key": "audio_frames",

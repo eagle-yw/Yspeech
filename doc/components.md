@@ -59,7 +59,7 @@ yspeech::RuntimeDagExecutor dag_executor;
 - `PipelineExecutor` 负责线性 stage 路径，并把执行交给 `tf::Pipeline`
 - `RuntimeDagExecutor` 负责静态 DAG 的 `Branch/Join` 路由
 - `EventStage` 负责把 runtime 结果统一派发成 `EngineEvent`
-- stage callback 由执行器绑定到 `VadStage / FeatureStage / AsrStage / EventStage`
+- stage callback 由执行器绑定到 `SourceStage / VadStage / FeatureStage / AsrStage / EventStage`
 
 限制：
 
@@ -71,6 +71,7 @@ yspeech::RuntimeDagExecutor dag_executor;
 
 当前目录已经按领域聚合：
 
+- `src/yspeech/domain/source/`
 - `src/yspeech/domain/vad/`
 - `src/yspeech/domain/feature/`
 - `src/yspeech/domain/asr/`
@@ -83,11 +84,12 @@ yspeech::RuntimeDagExecutor dag_executor;
   - 负责真实算法与内部状态机
 当前对应关系：
 
+- `SourceStage -> PassThroughSourceCore / FileSource / MicrophoneSource / StreamSource`
 - `VadStage -> SileroVadCore`
 - `FeatureStage -> KaldiFbankCore`
 - `AsrStage -> ParaformerCore / SenseVoiceCore / WhisperCore`
 
-这种组织方式比把所有 stage 全放在单独目录下更适合当前仓库，因为扩展轴主要是按 `vad / feature / asr` 领域生长。
+这种组织方式比把所有 stage 全放在单独目录下更适合当前仓库，因为扩展轴主要是按 `source / vad / feature / asr` 领域生长。
 
 同时，运行时骨架统一放在：
 

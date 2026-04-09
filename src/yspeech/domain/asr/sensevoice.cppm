@@ -6,11 +6,8 @@ module;
 export module yspeech.domain.asr.sensevoice;
 
 import std;
-import yspeech.context;
-import yspeech.stream_process;
 import yspeech.onnx.ort_symbol_lookup;
 import yspeech.domain.asr.base;
-import yspeech.stream_store;
 import yspeech.types;
 import yspeech.log;
 
@@ -133,10 +130,6 @@ public:
             result.confidence = 0.0f;
         }
         return result;
-    }
-
-    StreamProcessResult process_stream(Context&, StreamStore&) override {
-        return {};
     }
 
     void deinit() override {

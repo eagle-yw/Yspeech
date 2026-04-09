@@ -21,6 +21,9 @@ target_sources(yspeech
     yspeech/aspects/timer.cppm
     yspeech/stream_process.cppm
     yspeech/onnx/ort_symbol_lookup.cppm
+    yspeech/domain/source/base.cppm
+    yspeech/domain/source/builtin.cppm
+    yspeech/domain/source/stage.cppm
     yspeech/domain/vad/base.cppm
     yspeech/domain/vad/silero.cppm
     yspeech/domain/vad/stage.cppm
@@ -51,7 +54,6 @@ target_sources(yspeech
     yspeech/audio/audio_file.cppm
     yspeech/performance_export.cppm
     yspeech/resource_monitor.cppm
-    yspeech/performance_alert.cppm
     yspeech/runtime/common.cppm
     yspeech/yspeech.cppm
 )

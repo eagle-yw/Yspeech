@@ -15,21 +15,39 @@ Config validation failed:
 - 检查 `ops` 是否是数组
 - 检查 `id`、`name`、`depends_on` 的类型是否正确
 
-## 2. `Unknown operator type`
+## 2. 未知 core 或 capability 名称
 
 典型错误：
 
 ```text
-Failed to create operator: Unknown operator type: Xxx
+Failed to create ASR core: unknown core name: Xxx
 ```
 
-当前注册表里可直接使用的名字只有：
+先区分报错对象：
+
+- 如果是领域处理节点
+  - 需要检查 `ops[].name` 是否是已注册的 core 名称
+- 如果是 capability
+  - 需要检查 `capabilities[].name` 是否是已注册的 capability 名称
+
+当前可直接使用的内置 core 名称包括：
 
 - `SileroVad`
 - `KaldiFbank`
 - `AsrParaformer`
 - `AsrSenseVoice`
 - `AsrWhisper`
+
+当前可直接使用的内置 capability 名称包括：
+
+- `StatusCapability`
+- `AlertCapability`
+- `LogCapability`
+
+说明：
+
+- 像 `PassThroughSource`、`PassThroughBranch`、`JoinBarrier` 这种名字，在示例里主要用于表达静态 DAG 结构
+- 它们不是领域 core 的同义词，不应该和 `SileroVad`、`AsrParaformer` 这类处理 core 混用
 
 ## 3. 配置字段写了，但运行结果没有变化
 

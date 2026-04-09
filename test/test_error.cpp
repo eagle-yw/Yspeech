@@ -11,7 +11,7 @@ TEST(ErrorTest, ErrorCodeConversion) {
     EXPECT_EQ(yspeech::error_code_to_string(yspeech::ErrorCode::Success), "Success");
     EXPECT_EQ(yspeech::error_code_to_string(yspeech::ErrorCode::Unknown), "Unknown");
     EXPECT_EQ(yspeech::error_code_to_string(yspeech::ErrorCode::InvalidConfig), "InvalidConfig");
-    EXPECT_EQ(yspeech::error_code_to_string(yspeech::ErrorCode::OperatorProcessFailed), "OperatorProcessFailed");
+    EXPECT_EQ(yspeech::error_code_to_string(yspeech::ErrorCode::CoreProcessFailed), "CoreProcessFailed");
     EXPECT_EQ(yspeech::error_code_to_string(yspeech::ErrorCode::ResourceNotFound), "ResourceNotFound");
     EXPECT_EQ(yspeech::error_code_to_string(yspeech::ErrorCode::Timeout), "Timeout");
     EXPECT_EQ(yspeech::error_code_to_string(yspeech::ErrorCode::NetworkError), "NetworkError");
@@ -30,8 +30,8 @@ TEST(ErrorTest, ContextErrorRecording) {
     EXPECT_FALSE(ctx.has_errors());
     EXPECT_EQ(ctx.error_count(), 0);
     
-    ctx.record_error("op1", "Test error", "Operator", 
-                     yspeech::ErrorCode::OperatorProcessFailed, 
+    ctx.record_error("core1", "Test error", "Core", 
+                     yspeech::ErrorCode::CoreProcessFailed, 
                      yspeech::ErrorLevel::Error, 1, false);
     
     EXPECT_TRUE(ctx.has_errors());
@@ -39,10 +39,10 @@ TEST(ErrorTest, ContextErrorRecording) {
     
     auto errors = ctx.errors();
     EXPECT_EQ(errors.size(), 1);
-    EXPECT_EQ(errors[0].source, "op1");
+    EXPECT_EQ(errors[0].source, "core1");
     EXPECT_EQ(errors[0].message, "Test error");
-    EXPECT_EQ(errors[0].component, "Operator");
-    EXPECT_EQ(errors[0].code, yspeech::ErrorCode::OperatorProcessFailed);
+    EXPECT_EQ(errors[0].component, "Core");
+    EXPECT_EQ(errors[0].code, yspeech::ErrorCode::CoreProcessFailed);
     EXPECT_EQ(errors[0].level, yspeech::ErrorLevel::Error);
     EXPECT_EQ(errors[0].attempt, 1);
     EXPECT_EQ(errors[0].recovered, false);
@@ -51,17 +51,17 @@ TEST(ErrorTest, ContextErrorRecording) {
 TEST(ErrorTest, ErrorFiltering) {
     yspeech::Context ctx;
     
-    ctx.record_error("op1", "Error 1", "Operator", 
-                     yspeech::ErrorCode::OperatorProcessFailed, 
+    ctx.record_error("core1", "Error 1", "Core", 
+                     yspeech::ErrorCode::CoreProcessFailed, 
                      yspeech::ErrorLevel::Error);
-    ctx.record_error("op1", "Error 2", "Operator", 
-                     yspeech::ErrorCode::OperatorInitFailed, 
+    ctx.record_error("core1", "Error 2", "Core", 
+                     yspeech::ErrorCode::CoreInitFailed, 
                      yspeech::ErrorLevel::Warning);
     ctx.record_error("config", "Config error", "Config", 
                      yspeech::ErrorCode::InvalidConfig, 
                      yspeech::ErrorLevel::Fatal);
     
-    auto by_source = ctx.errors_by_source("op1");
+    auto by_source = ctx.errors_by_source("core1");
     EXPECT_EQ(by_source.size(), 2);
     
     auto by_component = ctx.errors_by_component("Config");
@@ -74,26 +74,25 @@ TEST(ErrorTest, ErrorFiltering) {
     EXPECT_EQ(by_level_error.size(), 1);
 }
 
-TEST(ErrorTest, StateStatistics) {
-    yspeech::State state;
-    
-    EXPECT_EQ(state.total_errors.load(), 0);
-    EXPECT_EQ(state.recovered_errors.load(), 0);
-    EXPECT_EQ(state.skipped_operators.load(), 0);
-    
-    state.mark_error();
-    state.mark_error();
-    state.mark_recovered();
-    state.mark_skipped();
-    
-    EXPECT_EQ(state.total_errors.load(), 2);
-    EXPECT_EQ(state.recovered_errors.load(), 1);
-    EXPECT_EQ(state.skipped_operators.load(), 1);
-    
-    state.reset();
-    EXPECT_EQ(state.total_errors.load(), 0);
-    EXPECT_EQ(state.recovered_errors.load(), 0);
-    EXPECT_EQ(state.skipped_operators.load(), 0);
+TEST(ErrorTest, ContextStatisticsStayInternal) {
+    yspeech::Context ctx;
+
+    EXPECT_EQ(ctx.error_count(), 0);
+    EXPECT_EQ(ctx.recovered_count(), 0);
+
+    ctx.record_error("core1", "Error 1", "Core",
+                     yspeech::ErrorCode::CoreProcessFailed,
+                     yspeech::ErrorLevel::Error, 1, false);
+    ctx.record_error("core1", "Recovered error", "Core",
+                     yspeech::ErrorCode::CoreProcessFailed,
+                     yspeech::ErrorLevel::Warning, 2, true);
+
+    EXPECT_EQ(ctx.error_count(), 2);
+    EXPECT_EQ(ctx.recovered_count(), 1);
+
+    ctx.clear_errors();
+    EXPECT_EQ(ctx.error_count(), 0);
+    EXPECT_EQ(ctx.recovered_count(), 0);
 }
 
 TEST(ErrorTest, ErrorSerialization) {
@@ -104,10 +103,10 @@ TEST(ErrorTest, ErrorSerialization) {
     };
     
     yspeech::Error err{
-        .source = "op1",
-        .component = "Operator",
+        .source = "core1",
+        .component = "Core",
         .message = "Test error",
-        .code = yspeech::ErrorCode::OperatorProcessFailed,
+        .code = yspeech::ErrorCode::CoreProcessFailed,
         .level = yspeech::ErrorLevel::Error,
         .attempt = 2,
         .recovered = false,
@@ -117,17 +116,17 @@ TEST(ErrorTest, ErrorSerialization) {
     
     std::string str = err.to_string();
     EXPECT_FALSE(str.empty());
-    EXPECT_TRUE(str.find("Operator") != std::string::npos);
-    EXPECT_TRUE(str.find("op1") != std::string::npos);
+    EXPECT_TRUE(str.find("Core") != std::string::npos);
+    EXPECT_TRUE(str.find("core1") != std::string::npos);
     EXPECT_TRUE(str.find("Test error") != std::string::npos);
-    EXPECT_TRUE(str.find("OperatorProcessFailed") != std::string::npos);
+    EXPECT_TRUE(str.find("CoreProcessFailed") != std::string::npos);
     EXPECT_TRUE(str.find("attempt 2") != std::string::npos);
     
     nlohmann::json json = err.to_json();
-    EXPECT_EQ(json["source"], "op1");
-    EXPECT_EQ(json["component"], "Operator");
+    EXPECT_EQ(json["source"], "core1");
+    EXPECT_EQ(json["component"], "Core");
     EXPECT_EQ(json["message"], "Test error");
-    EXPECT_EQ(json["code"], "OperatorProcessFailed");
+    EXPECT_EQ(json["code"], "CoreProcessFailed");
     EXPECT_EQ(json["level"], "Error");
     EXPECT_EQ(json["metadata"]["key"], "value");
     EXPECT_EQ(json["metadata"]["nested"]["a"], 1);
@@ -136,10 +135,10 @@ TEST(ErrorTest, ErrorSerialization) {
 
 TEST(ErrorTest, SerializationJsonValidity) {
     yspeech::Error err{
-        .source = "op1",
-        .component = "Operator",
+        .source = "core1",
+        .component = "Core",
         .message = "Test error with \"quotes\" and \\backslash\\",
-        .code = yspeech::ErrorCode::OperatorProcessFailed,
+        .code = yspeech::ErrorCode::CoreProcessFailed,
         .level = yspeech::ErrorLevel::Error,
         .attempt = 2,
         .recovered = false,
@@ -154,21 +153,21 @@ TEST(ErrorTest, SerializationJsonValidity) {
     nlohmann::json parsed;
     EXPECT_NO_THROW(parsed = nlohmann::json::parse(json_str));
     
-    EXPECT_EQ(parsed["source"], "op1");
+    EXPECT_EQ(parsed["source"], "core1");
     EXPECT_EQ(parsed["message"], "Test error with \"quotes\" and \\backslash\\");
 }
 
 TEST(ErrorTest, ContextSerialization) {
     yspeech::Context ctx;
     
-    ctx.record_error("op1", "Error 1", "Operator");
-    ctx.record_error("op2", "Error 2", "Operator");
+    ctx.record_error("core1", "Error 1", "Core");
+    ctx.record_error("core2", "Error 2", "Core");
     
     nlohmann::json json = ctx.errors_to_json();
     EXPECT_TRUE(json.is_array());
     EXPECT_EQ(json.size(), 2);
-    EXPECT_EQ(json[0]["source"], "op1");
-    EXPECT_EQ(json[1]["source"], "op2");
+    EXPECT_EQ(json[0]["source"], "core1");
+    EXPECT_EQ(json[1]["source"], "core2");
     
     std::string summary = ctx.errors_summary();
     EXPECT_TRUE(summary.find("Total: 2") != std::string::npos);
@@ -185,20 +184,20 @@ TEST(ErrorTest, ErrorCallback) {
         last_source = err.source;
     });
     
-    ctx.record_error("op1", "Test error", "Operator");
+    ctx.record_error("core1", "Test error", "Core");
     EXPECT_EQ(callback_count, 1);
-    EXPECT_EQ(last_source, "op1");
+    EXPECT_EQ(last_source, "core1");
     
-    ctx.record_error("op2", "Another error", "Operator");
+    ctx.record_error("core2", "Another error", "Core");
     EXPECT_EQ(callback_count, 2);
-    EXPECT_EQ(last_source, "op2");
+    EXPECT_EQ(last_source, "core2");
 }
 
 TEST(ErrorTest, ClearErrors) {
     yspeech::Context ctx;
     
-    ctx.record_error("op1", "Error 1", "Operator");
-    ctx.record_error("op2", "Error 2", "Operator");
+    ctx.record_error("core1", "Error 1", "Core");
+    ctx.record_error("core2", "Error 2", "Core");
     
     EXPECT_TRUE(ctx.has_errors());
     EXPECT_EQ(ctx.error_count(), 2);
@@ -213,13 +212,13 @@ TEST(ErrorTest, ClearErrors) {
 TEST(ErrorTest, HasFatalErrors) {
     yspeech::Context ctx;
     
-    ctx.record_error("op1", "Error", "Operator", 
-                     yspeech::ErrorCode::OperatorProcessFailed, 
+    ctx.record_error("core1", "Error", "Core", 
+                     yspeech::ErrorCode::CoreProcessFailed, 
                      yspeech::ErrorLevel::Error);
     
     EXPECT_FALSE(ctx.has_fatal_errors());
     
-    ctx.record_error("op2", "Fatal error", "Operator", 
+    ctx.record_error("core2", "Fatal error", "Core", 
                      yspeech::ErrorCode::InvalidConfig, 
                      yspeech::ErrorLevel::Fatal);
     
@@ -229,8 +228,8 @@ TEST(ErrorTest, HasFatalErrors) {
 TEST(ErrorTest, RecoveredError) {
     yspeech::Context ctx;
     
-    ctx.record_error("op1", "Recovered error", "Operator", 
-                     yspeech::ErrorCode::OperatorProcessFailed, 
+    ctx.record_error("core1", "Recovered error", "Core", 
+                     yspeech::ErrorCode::CoreProcessFailed, 
                      yspeech::ErrorLevel::Info, 3, true);
     
     EXPECT_EQ(ctx.recovered_count(), 1);
@@ -271,7 +270,7 @@ TEST(ErrorTest, ThreadSafety) {
     for (int i = 0; i < 10; ++i) {
         threads.emplace_back([&ctx, i]() {
             for (int j = 0; j < 10; ++j) {
-                ctx.record_error("op" + std::to_string(i), "Error", "Operator");
+                ctx.record_error("core" + std::to_string(i), "Error", "Core");
             }
         });
     }
@@ -286,15 +285,15 @@ TEST(ErrorTest, ThreadSafety) {
 TEST(ContextTest, ErrorFilteringByComponent) {
     yspeech::Context ctx;
     
-    ctx.record_error("op1", "Error 1", "Operator", 
-                     yspeech::ErrorCode::OperatorProcessFailed);
-    ctx.record_error("op2", "Error 2", "Operator", 
-                     yspeech::ErrorCode::OperatorInitFailed);
+    ctx.record_error("core1", "Error 1", "Core", 
+                     yspeech::ErrorCode::CoreProcessFailed);
+    ctx.record_error("core2", "Error 2", "Core", 
+                     yspeech::ErrorCode::CoreInitFailed);
     ctx.record_error("config.json", "Parse error", "Config", 
                      yspeech::ErrorCode::ConfigParseError);
     
-    auto op_errors = ctx.errors_by_component("Operator");
-    EXPECT_EQ(op_errors.size(), 2);
+    auto core_errors = ctx.errors_by_component("Core");
+    EXPECT_EQ(core_errors.size(), 2);
     
     auto config_errors = ctx.errors_by_component("Config");
     EXPECT_EQ(config_errors.size(), 1);

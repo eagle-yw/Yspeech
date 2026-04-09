@@ -323,7 +323,7 @@ public:
     }
 
     void record_error(const std::string& source, const std::string& message,
-                      const std::string& component = "Operator",
+                      const std::string& component = "Core",
                       ErrorCode code = ErrorCode::Unknown,
                       ErrorLevel level = ErrorLevel::Error,
                       int attempt = 0, 
@@ -422,9 +422,6 @@ public:
         state_.reset();
     }
 
-    State& state() { return state_; }
-    const State& state() const { return state_; }
-
     nlohmann::json errors_to_json() const {
         std::shared_lock lock(mutex_);
         nlohmann::json result = nlohmann::json::array();
@@ -439,7 +436,7 @@ public:
         return std::format("Total: {}, Recovered: {}, Skipped: {}, Fatal: {}",
             state_.total_errors.load(std::memory_order_relaxed),
             state_.recovered_errors.load(std::memory_order_relaxed),
-            state_.skipped_operators.load(std::memory_order_relaxed),
+            state_.skipped_cores.load(std::memory_order_relaxed),
             has_fatal_errors() ? "Yes" : "No"
         );
     }
@@ -657,19 +654,19 @@ public:
     ProcessingStats& performance_stats() { return performance_stats_; }
     const ProcessingStats& performance_stats() const { return performance_stats_; }
     
-    void record_operator_time(const std::string& op_id, double time_ms) {
+    void record_core_time(const std::string& op_id, double time_ms) {
         std::unique_lock lock(mutex_);
-        performance_stats_.record_operator_time(op_id, time_ms);
+        performance_stats_.record_core_time(op_id, time_ms);
     }
 
-    void record_operator_effective_call(const std::string& op_id) {
+    void record_core_effective_call(const std::string& op_id) {
         std::unique_lock lock(mutex_);
-        performance_stats_.record_operator_effective_call(op_id);
+        performance_stats_.record_core_effective_call(op_id);
     }
 
-    void record_operator_effective_sample(const std::string& op_id, double time_ms) {
+    void record_core_effective_sample(const std::string& op_id, double time_ms) {
         std::unique_lock lock(mutex_);
-        performance_stats_.record_operator_effective_sample(op_id, time_ms);
+        performance_stats_.record_core_effective_sample(op_id, time_ms);
     }
 };
 }

@@ -369,7 +369,7 @@ export struct StageOutputConfig {
     std::string key;
 };
 
-export struct OperatorConfig {
+export struct CoreConfig {
     std::string id;
     std::string name;
     nlohmann::json params;
@@ -413,29 +413,29 @@ public:
         
         if (j.contains("ops")) {
             for (const auto& op : j["ops"]) {
-                OperatorConfig op_cfg;
-                op_cfg.id = op["id"].get<std::string>();
-                op_cfg.name = op["name"].get<std::string>();
+                CoreConfig core_cfg;
+                core_cfg.id = op["id"].get<std::string>();
+                core_cfg.name = op["name"].get<std::string>();
                 
                 if (op.contains("params")) {
-                    op_cfg.params = detail::resolve_json_variables(op["params"], global_props);
+                    core_cfg.params = detail::resolve_json_variables(op["params"], global_props);
                 }
                 if (op.contains("capabilities")) {
-                    op_cfg.capabilities = op["capabilities"];
+                    core_cfg.capabilities = op["capabilities"];
                 }
                 if (op.contains("depends_on")) {
                     for (const auto& dep : op["depends_on"]) {
-                        op_cfg.depends_on.push_back(dep.get<std::string>());
+                        core_cfg.depends_on.push_back(dep.get<std::string>());
                     }
                 }
                 if (op.contains("parallel")) {
-                    op_cfg.parallel = op["parallel"].get<bool>();
+                    core_cfg.parallel = op["parallel"].get<bool>();
                 }
                 if (op.contains("error_handling")) {
-                    op_cfg.error_handling = op["error_handling"];
+                    core_cfg.error_handling = op["error_handling"];
                 }
-                
-                cfg.ops_.push_back(std::move(op_cfg));
+
+                cfg.ops_.push_back(std::move(core_cfg));
             }
         }
         
@@ -447,7 +447,7 @@ public:
     size_t max_concurrency() const { return max_concurrency_; }
     const StageInputConfig& input() const { return input_; }
     const StageOutputConfig& output() const { return output_; }
-    const std::vector<OperatorConfig>& ops() const { return ops_; }
+    const std::vector<CoreConfig>& ops() const { return ops_; }
 
 private:
     std::string id_;
@@ -455,7 +455,7 @@ private:
     size_t max_concurrency_ = 8;
     StageInputConfig input_;
     StageOutputConfig output_;
-    std::vector<OperatorConfig> ops_;
+    std::vector<CoreConfig> ops_;
 };
 
 export class PipelineConfig {

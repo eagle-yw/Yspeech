@@ -36,8 +36,8 @@ export struct PipelineStageRecipe {
     RuntimeNodeKind node_kind = RuntimeNodeKind::Linear;
     std::size_t max_concurrency = 1;
     bool enabled = true;
-    std::vector<std::string> operator_ids;
-    std::vector<std::string> operator_names;
+    std::vector<std::string> core_ids;
+    std::vector<std::string> core_names;
     std::vector<std::string> depends_on;
     std::vector<std::string> downstream_ids;
     JoinPolicy join_policy = JoinPolicy::AllOf;
@@ -74,13 +74,34 @@ export struct PipelineRuntimeRecipe {
 
 namespace detail {
 
+inline auto source_core_name_from_config(const nlohmann::json& raw_config) -> std::string {
+    if (!raw_config.contains("source") || !raw_config["source"].is_object()) {
+        return "MicrophoneSource";
+    }
+    const auto& source = raw_config["source"];
+    const auto type = source.value("type", std::string("microphone"));
+    if (type == "file") {
+        return "FileSource";
+    }
+    if (type == "stream") {
+        return "StreamSource";
+    }
+    return "MicrophoneSource";
+}
+
 inline auto infer_stage_role(const PipelineStageConfig& stage) -> PipelineStageRole {
+    bool has_source = false;
     bool has_vad = false;
     bool has_feature = false;
     bool has_asr = false;
 
     for (const auto& op : stage.ops()) {
-        if (op.name == "SileroVad") {
+        if (op.name == "PassThroughSource" ||
+            op.name == "FileSource" ||
+            op.name == "MicrophoneSource" ||
+            op.name == "StreamSource") {
+            has_source = true;
+        } else if (op.name == "SileroVad") {
             has_vad = true;
         } else if (op.name == "KaldiFbank") {
             has_feature = true;
@@ -91,9 +112,13 @@ inline auto infer_stage_role(const PipelineStageConfig& stage) -> PipelineStageR
         }
     }
 
-    const int matched = static_cast<int>(has_vad) + static_cast<int>(has_feature) + static_cast<int>(has_asr);
+    const int matched =
+        static_cast<int>(has_source) + static_cast<int>(has_vad) + static_cast<int>(has_feature) + static_cast<int>(has_asr);
     if (matched != 1) {
         return PipelineStageRole::Unknown;
+    }
+    if (has_source) {
+        return PipelineStageRole::Source;
     }
     if (has_vad) {
         return PipelineStageRole::Vad;
@@ -172,10 +197,30 @@ export inline auto make_pipeline_runtime_recipe(
             entry.join_timeout_ms = it->second;
         }
         for (const auto& op : stage.ops()) {
-            entry.operator_ids.push_back(op.id);
-            entry.operator_names.push_back(op.name);
+            entry.core_ids.push_back(op.id);
+            entry.core_names.push_back(op.name);
         }
         recipe.stages.push_back(std::move(entry));
+    }
+
+    const bool has_explicit_source_stage = std::ranges::any_of(
+        recipe.stages,
+        [](const PipelineStageRecipe& stage) { return stage.role == PipelineStageRole::Source; }
+    );
+    if (!has_explicit_source_stage) {
+        PipelineStageRecipe source_stage;
+        source_stage.stage_id = "source_stage";
+        source_stage.role = PipelineStageRole::Source;
+        source_stage.max_concurrency = 1;
+        source_stage.core_ids = {"source"};
+        source_stage.core_names = {detail::source_core_name_from_config(raw_config)};
+        recipe.stages.insert(recipe.stages.begin(), std::move(source_stage));
+
+        for (std::size_t i = 1; i < recipe.stages.size(); ++i) {
+            if (recipe.stages[i].depends_on.empty()) {
+                recipe.stages[i].depends_on.push_back("source_stage");
+            }
+        }
     }
 
     std::unordered_map<std::string, std::size_t> stage_index;

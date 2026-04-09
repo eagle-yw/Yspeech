@@ -181,7 +181,7 @@ export struct EngineEvent {
     std::string alert_message;
 };
 
-export struct OperatorTiming {
+export struct CoreTiming {
     std::string op_id;
     double total_time_ms = 0.0;
     double active_wall_time_ms = 0.0;
@@ -284,10 +284,11 @@ export struct ProcessingStats {
     
     double total_processing_time_ms = 0.0;
     double engine_init_time_ms = 0.0;
-    double operator_total_time_ms = 0.0;
-    double non_operator_time_ms = 0.0;
-    double operator_time_percent = 0.0;
-    double non_operator_time_percent = 0.0;
+    double core_total_time_ms = 0.0;
+    double core_active_time_ms = 0.0;
+    double non_core_time_ms = 0.0;
+    double core_time_percent = 0.0;
+    double non_core_time_percent = 0.0;
     double time_to_first_chunk_ms = 0.0;
     double time_to_first_partial_ms = 0.0;
     double time_to_first_final_ms = 0.0;
@@ -312,57 +313,67 @@ export struct ProcessingStats {
     double audio_duration_ms = 0.0;
     double rtf = 0.0;
     
-    std::unordered_map<std::string, OperatorTiming> operator_timings;
+    std::unordered_map<std::string, CoreTiming> core_timings;
     
     double peak_memory_mb = 0.0;
     double avg_cpu_percent = 0.0;
     
-    void record_operator_time(const std::string& op_id, double time_ms, std::size_t history_size = 100) {
-        if (operator_timings.find(op_id) == operator_timings.end()) {
-            operator_timings[op_id] = OperatorTiming{.op_id = op_id};
+    void record_core_time(const std::string& op_id, double time_ms, std::size_t history_size = 100) {
+        if (core_timings.find(op_id) == core_timings.end()) {
+            core_timings[op_id] = CoreTiming{.op_id = op_id};
         }
-        operator_timings[op_id].record(time_ms, history_size);
+        core_timings[op_id].record(time_ms, history_size);
     }
 
-    void record_operator_effective_call(const std::string& op_id) {
-        if (operator_timings.find(op_id) == operator_timings.end()) {
-            operator_timings[op_id] = OperatorTiming{.op_id = op_id};
+    void record_core_effective_call(const std::string& op_id) {
+        if (core_timings.find(op_id) == core_timings.end()) {
+            core_timings[op_id] = CoreTiming{.op_id = op_id};
         }
-        operator_timings[op_id].record_effective_call();
+        core_timings[op_id].record_effective_call();
     }
 
-    void record_operator_effective_sample(const std::string& op_id, double time_ms, std::size_t history_size = 100) {
-        if (operator_timings.find(op_id) == operator_timings.end()) {
-            operator_timings[op_id] = OperatorTiming{.op_id = op_id};
+    void record_core_effective_sample(const std::string& op_id, double time_ms, std::size_t history_size = 100) {
+        if (core_timings.find(op_id) == core_timings.end()) {
+            core_timings[op_id] = CoreTiming{.op_id = op_id};
         }
-        operator_timings[op_id].record_effective_sample(time_ms, history_size);
+        core_timings[op_id].record_effective_sample(time_ms, history_size);
     }
 
-    void record_operator_active_window(const std::string& op_id, double start_ms, double end_ms) {
-        if (operator_timings.find(op_id) == operator_timings.end()) {
-            operator_timings[op_id] = OperatorTiming{.op_id = op_id};
+    void record_core_active_window(const std::string& op_id, double start_ms, double end_ms) {
+        if (core_timings.find(op_id) == core_timings.end()) {
+            core_timings[op_id] = CoreTiming{.op_id = op_id};
         }
-        operator_timings[op_id].record_active_window(start_ms, end_ms);
+        core_timings[op_id].record_active_window(start_ms, end_ms);
     }
     
     std::string to_string() const {
         std::string result = "=== Performance Summary ===\n";
+
+        result += "\nCore Metrics:\n";
         result += "┌───────────────────────────┬────────────────┐\n";
         result += std::format("│ {:<25} │ {:>14} │\n", "Metric", "Value");
         result += "├───────────────────────────┼────────────────┤\n";
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Processing Time", total_processing_time_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "First Partial", time_to_first_partial_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "First Final", time_to_first_final_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Drain After EOF", drain_after_eof_ms);
+        result += std::format("│ {:<25} │ {:>14.3f} │\n", "RTF", rtf);
+        result += std::format("│ {:<25} │ {:>11.2f} %  │\n", "Core Share", core_time_percent);
+        result += std::format("│ {:<25} │ {:>11.2f} %  │\n", "Non-Core Share", non_core_time_percent);
         result += std::format("│ {:<25} │ {:>14} │\n", "Chunks", audio_chunks_processed);
         result += std::format("│ {:<25} │ {:>14} │\n", "Segments", speech_segments_detected);
         result += std::format("│ {:<25} │ {:>14} │\n", "Results", asr_results_generated);
+        result += "└───────────────────────────┴────────────────┘\n";
+
+        result += "\nDiagnostic Metrics:\n";
+        result += "┌───────────────────────────┬────────────────┐\n";
+        result += std::format("│ {:<25} │ {:>14} │\n", "Metric", "Value");
+        result += "├───────────────────────────┼────────────────┤\n";
         result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Engine Init Time", engine_init_time_ms);
-        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Processing Time", total_processing_time_ms);
-        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Operator Time", operator_total_time_ms);
-        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Non-Operator Time", non_operator_time_ms);
-        result += std::format("│ {:<25} │ {:>11.2f} %  │\n", "Operator Share", operator_time_percent);
-        result += std::format("│ {:<25} │ {:>11.2f} %  │\n", "Non-Operator Share", non_operator_time_percent);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Core Total Time", core_total_time_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Core Active Time", core_active_time_ms);
+        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Non-Core Wall Time", non_core_time_ms);
         result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Time To First Chunk", time_to_first_chunk_ms);
-        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Time To First Partial", time_to_first_partial_ms);
-        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Time To First Final", time_to_first_final_ms);
-        result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Drain After EOF", drain_after_eof_ms);
         result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Stop Overhead", stop_overhead_ms);
         result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Stop.Monitor", stop_resource_monitor_ms);
         result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Stop.SourceJoin", stop_source_join_ms);
@@ -380,18 +391,17 @@ export struct ProcessingStats {
         result += std::format("│ {:<25} │ {:>11.4f} ms │\n", "Event Queue Push Avg", event_queue_push_avg_ms);
         result += std::format("│ {:<25} │ {:>11.4f} ms │\n", "Event Callback Avg", event_callback_avg_ms);
         result += std::format("│ {:<25} │ {:>11.2f} ms │\n", "Audio Duration", audio_duration_ms);
-        result += std::format("│ {:<25} │ {:>14.3f} │\n", "RTF", rtf);
         result += std::format("│ {:<25} │ {:>11.2f} MB │\n", "Peak Memory", peak_memory_mb);
         result += std::format("│ {:<25} │ {:>12.1f} % │\n", "Avg CPU", avg_cpu_percent);
         result += "└───────────────────────────┴────────────────┘\n";
         
-        if (!operator_timings.empty()) {
-            result += "\nOperator Performance:\n";
+        if (!core_timings.empty()) {
+            result += "\nCore Performance:\n";
             result += "┌─────────────────┬──────────┬──────────┬───────┬───────┬──────────┬──────────┬──────────┬─────────┐\n";
-            result += "│ Operator        │ Total    │ Avg      │ Calls │ Exec  │ P50      │ P95      │ P99      │ % Task  │\n";
+            result += "│ Core            │ Total    │ Avg      │ Calls │ Exec  │ P50      │ P95      │ P99      │ % Task  │\n";
             result += "├─────────────────┼──────────┼──────────┼───────┼───────┼──────────┼──────────┼──────────┼─────────┤\n";
             
-            for (const auto& [id, timing] : operator_timings) {
+            for (const auto& [id, timing] : core_timings) {
                 const double task_share_basis_ms =
                     timing.active_wall_time_ms > 0.0
                         ? timing.active_wall_time_ms

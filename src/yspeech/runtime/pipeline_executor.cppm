@@ -24,6 +24,7 @@ public:
 
     void configure(PipelineBuilderConfig config, RuntimeContext& runtime, SegmentRegistry& registry);
     void set_stage_callback(PipelineStageRole role, StageCallback callback);
+    void set_source_stage(StageCallback callback);
     void set_vad_stage(StageCallback callback);
     void set_feature_stage(StageCallback callback);
     void set_asr_stage(StageCallback callback);
@@ -66,6 +67,10 @@ public:
 
     void set_vad_stage(PipelineExecutor::StageCallback callback) {
         set_stage_callback(PipelineStageRole::Vad, std::move(callback));
+    }
+
+    void set_source_stage(PipelineExecutor::StageCallback callback) {
+        set_stage_callback(PipelineStageRole::Source, std::move(callback));
     }
 
     void set_feature_stage(PipelineExecutor::StageCallback callback) {
@@ -196,6 +201,10 @@ private:
         queue_cv.notify_all();
         if (line_tokens[pf.line()].has_value()) {
             line_tokens[pf.line()]->line_id = pf.line();
+            auto callback = snapshot_callback(PipelineStageRole::Source);
+            if (callback && runtime_context && segment_registry) {
+                callback(*line_tokens[pf.line()], *runtime_context, *segment_registry);
+            }
         }
     }
 
@@ -291,6 +300,10 @@ void PipelineExecutor::configure(PipelineBuilderConfig config, RuntimeContext& r
 
 void PipelineExecutor::set_stage_callback(PipelineStageRole role, StageCallback callback) {
     impl_->set_stage_callback(role, std::move(callback));
+}
+
+void PipelineExecutor::set_source_stage(StageCallback callback) {
+    impl_->set_source_stage(std::move(callback));
 }
 
 void PipelineExecutor::set_vad_stage(StageCallback callback) {

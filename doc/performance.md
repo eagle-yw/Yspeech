@@ -7,8 +7,8 @@
 `ProcessingStats` 当前会输出这些核心指标：
 
 - `total_processing_time_ms`
-- `operator_total_time_ms`
-- `non_operator_time_ms`
+- `core_total_time_ms`
+- `non_core_time_ms`
 - `time_to_first_partial_ms`
 - `time_to_first_final_ms`
 - `drain_after_eof_ms`
@@ -35,12 +35,12 @@
 `streaming_demo` 当前会输出两层性能信息：
 
 1. 总览表 `Performance Summary`
-2. 明细表 `Operator Performance`
+2. 明细表 `Core Performance`
 
 当前主统计链路：
 
 - `Performance Summary`
-- `Operator Performance`
+- `Core Performance`
 - `ProcessingStats`
 
 都以 `Aspect` 为主来源，默认由 `TimerAspect` 在 `Stage -> Core` 边界统一采集。
@@ -49,52 +49,75 @@
 
 ### 总览表
 
+`Performance Summary` 现在分成两块：
+
+- `Core Metrics`
+  - 面向回归、基线对比和日常结果判断
+  - 优先看：
+    - `Processing Time`
+    - `First Partial`
+    - `First Final`
+    - `Drain After EOF`
+    - `RTF`
+    - `Core Share`
+- `Diagnostic Metrics`
+  - 面向排障、治理和定位尾部开销
+  - 包括：
+    - `Stop.*`
+    - `EOF *`
+    - `Event *`
+    - `Engine Init Time`
+    - `Peak Memory`
+    - `Avg CPU`
+
 这里最容易混淆的是这 4 个字段：
 
 | 字段 | 含义 |
 |------|------|
 | `Processing Time` | 整次任务的 wall time，作为总分母 |
-| `Operator Time` | 所有 operator 调用耗时的累计值 |
-| `Non-Operator Time` | 总 wall time 中不属于 operator 活跃区间的部分 |
-| `Operator Share` | operator 对整次任务 wall time 的总体占比 |
+| `Core Total Time` | 所有 core 调用耗时的累计值 |
+| `Core Active Time` | 所有 core 活跃区间合并后的 wall time |
+| `Non-Core Wall Time` | 总 wall time 中不属于 core 活跃区间的部分 |
+| `Core Share` | core 对整次任务 wall time 的总体占比 |
 
 注意：
 
-- `Operator Time` 是累计值，在并发场景下可能大于 `Processing Time`
-- 因此判断“这次任务主要花在哪”时，不要直接拿单个 operator 的 `Total` 去除 `Processing Time`
+- `Core Total Time` 是累计值，在并发场景下可能大于 `Processing Time`
+- `Core Share` 基于 `Core Active Time` 计算，不基于累计调用时间计算
+- 因此判断“这次任务主要花在哪”时，不要直接拿单个 core 的 `Total` 去除 `Processing Time`
 
 ### 明细表
 
-`Operator Performance` 里的字段含义是：
+`Core Performance` 里的字段含义是：
 
 | 字段 | 含义 |
 |------|------|
-| `Total` | 该 operator 的累计执行时间 |
+| `Total` | 该 core 的累计执行时间 |
 | `Avg` | 单次平均执行时间 |
 | `Calls` | 被调用次数 |
 | `Exec` | 有效执行次数 |
-| `% Task` | 该 operator 在整次任务 wall time 中的活跃占比 |
+| `% Task` | 该 core 在整次任务 wall time 中的活跃占比 |
 
 这里的 `% Task` 才是“看它在任务执行总耗时里占多少”的列。
 
 理解时建议这样看：
 
-- 看 `Operator Share`：先判断任务总体是不是主要耗在 operator 上
-- 再看各 operator 的 `% Task`：判断哪个 operator 是主热点
+- 看 `Core Share`：先判断任务总体是不是主要耗在 core 上
+- 再看各 core 的 `% Task`：判断哪个 core 是主热点
 - 再配合 `Total / Avg / Calls`：判断是“单次慢”还是“调用太多”
 
 ### 为什么 `% Task` 不一定加起来正好 100%
 
 这是正常的，因为整次任务 wall time 里还可能包含：
 
-- 非 operator 的处理
+- 非 core 的处理
 - 线程切换与排队
 - 无算子活跃的等待区间
 
 因此：
 
-- `Operator Share` 反映 operator 整体占比
-- 每个 operator 的 `% Task` 反映各自对总任务时间的贡献
+- `Core Share` 反映 core 整体占比
+- 每个 core 的 `% Task` 反映各自对总任务时间的贡献
 - 它们加起来不要求正好等于 `100%`
 
 ## 导出字段口径
@@ -103,14 +126,18 @@
 
 - `total_processing_time_ms`
   - 对应 `Processing Time`
-- `operator_time_percent`
-  - 对应总览表里的 `Operator Share`
-- `operator_timings[].total_time_ms`
-  - operator 累计执行时间
-- `operator_timings[].active_wall_time_ms`
-  - operator 在任务中的活跃 wall time
-- `operator_timings[].task_time_percent`
-  - 对应终端 `Operator Performance` 里的 `% Task`
+- `core_total_time_ms`
+  - 对应 `Core Total Time`
+- `core_active_time_ms`
+  - 对应 `Core Active Time`
+- `core_time_percent`
+  - 对应总览表里的 `Core Share`
+- `core_timings[].total_time_ms`
+  - core 累计执行时间
+- `core_timings[].active_wall_time_ms`
+  - core 在任务中的活跃 wall time
+- `core_timings[].task_time_percent`
+  - 对应终端 `Core Performance` 里的 `% Task`
 
 ## 调优重点
 
@@ -136,7 +163,7 @@
 - `enable_event_queue=false` 可只走 callback，不再额外压入内部队列
 - `streaming_demo --queue 0` 可直接做 A/B
 
-### 5. operator 自身阈值
+### 5. core 自身阈值
 
 这类参数往往比框架参数更直接影响延迟：
 

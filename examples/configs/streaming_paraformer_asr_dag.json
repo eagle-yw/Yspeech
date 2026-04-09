@@ -23,19 +23,19 @@
   },
   "pipelines": [
     {
-      "id": "capture_stage",
-      "name": "Capture Stage",
+      "id": "source_stage",
+      "name": "Source Stage",
       "ops": [
         {
-          "id": "capture",
-          "name": "UnknownSource"
+          "id": "source",
+          "name": "FileSource"
         }
       ]
     },
     {
       "id": "vad_stage",
       "name": "VAD Stage",
-      "depends_on": ["capture_stage"],
+      "depends_on": ["source_stage"],
       "max_concurrency": 1,
       "ops": [
         {
@@ -81,7 +81,7 @@
       "ops": [
         {
           "id": "merge",
-          "name": "UnknownMerge"
+          "name": "JoinBarrier"
         }
       ]
     },

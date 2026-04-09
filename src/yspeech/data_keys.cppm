@@ -13,7 +13,7 @@ export struct DataKeyInfo {
     std::string description;
     bool is_buffer = false;
     bool accumulates = false;
-    std::string owner_operator;
+    std::string owner_core;
 };
 
 export class DataKeys {

@@ -22,8 +22,19 @@
   },
   "pipelines": [
     {
+      "id": "source_stage",
+      "name": "Source Stage",
+      "ops": [
+        {
+          "id": "source",
+          "name": "MicrophoneSource"
+        }
+      ]
+    },
+    {
       "id": "vad_stage",
       "name": "VAD Detection Stage",
+      "depends_on": ["source_stage"],
       "max_concurrency": 4,
       "input": {
         "key": "audio_frames",

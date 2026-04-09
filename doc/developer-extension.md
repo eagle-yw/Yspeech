@@ -13,6 +13,7 @@
 - `src/yspeech/domain/`
   - 放领域实现
   - 当前已有：
+    - `source/`
     - `vad/`
     - `feature/`
     - `asr/`
@@ -53,6 +54,11 @@ src/yspeech/domain/speaker/
 - 读取/写入 `SegmentRegistry`
 - 决定事件时机
 - 把配置映射成对应 `Core`
+
+像当前的 `SourceStage` 也是这个思路：
+
+- 底层 `FileSource / MicSource / StreamSource` 负责真实输入
+- `SourceStage` 负责把入口 source 纳入显式 stage DAG
 
 `Stage` 不应该承担：
 
@@ -125,6 +131,7 @@ src/yspeech/domain/speaker/
 
 当前主线保留“按名字注册、按配置创建”的思路，但注册目标已经是 `Core`：
 
+- `SourceCoreFactory`
 - `VadCoreFactory`
 - `FeatureCoreFactory`
 - `AsrCoreFactory`

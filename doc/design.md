@@ -15,7 +15,7 @@ flowchart LR
     user[用户代码]
     engine[Engine]
     runtime[EngineRuntime]
-    source[IFrameSource<br/>FileSource / MicSource]
+    source[IFrameSource<br/>FileSource / MicSource / StreamSource]
     store[StreamStore<br/>audio_frames ring]
     dag[RuntimeDagExecutor]
     pipe[PipelineExecutor / tf::Pipeline]
@@ -45,13 +45,15 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    source[SourcePipe]
+    ingress[SourcePipe]
+    source[SourceStage]
     vad[VadStage]
     feature[FeatureStage]
     asr[AsrStage]
     event[EventStage]
     segment[SegmentState]
 
+    ingress --> source
     source --> vad
     vad --> feature
     feature --> asr
@@ -61,7 +63,14 @@ flowchart LR
     asr --> segment
 ```
 
-这条路径已经是当前流式运行时默认主线；线性配置直接走 `tf::Pipeline`，声明 `depends_on` 的配置会进入静态 DAG 执行层。
+这条路径已经是当前流式运行时默认主线；线性配置会先被编译成单路径静态 DAG，再交给 `tf::Pipeline` 和 `RuntimeDagExecutor` 组合执行。
+
+这里需要区分两层：
+
+- `SourcePipe`
+  - `tf::Pipeline` 的技术入口，负责 token 注入和背压
+- `SourceStage`
+  - 显式的运行时节点，负责把 source 也纳入 stage DAG 语义
 
 ## 静态 DAG 设计
 
@@ -102,18 +111,19 @@ flowchart LR
 
 1. 配置控制 DAG 结构，运行时结构固定不变。
 2. `tf::Pipeline` 负责线性流段，而不是强行承载任意 DAG。
-3. 领域 `Stage` 负责 runtime 语义和 token/segment 流转。
-4. `Core` 负责真实算法处理。
-5. `EventStage` 负责事件分发，属于 runtime 骨架层，而不是算法领域层。
-6. `Aspect` 继续保留，用于日志、计时、统计、告警、追踪等横切能力。
+3. `Source` 也是显式 stage；顶层 `source` 只是简写，运行时会编译成 `SourceStage`。
+4. 领域 `Stage` 负责 runtime 语义和 token/segment 流转。
+5. `Core` 负责真实算法处理。
+6. `EventStage` 负责事件分发，属于 runtime 骨架层，而不是算法领域层。
+7. `Aspect` 继续保留，用于日志、计时、统计、告警、追踪等横切能力。
 
 ### 线性段与分支能力
 
-当前推荐主线是单线：
+当前推荐主线是单路径静态 DAG：
 
 ```mermaid
 flowchart LR
-    capture --> vad --> feature --> asr --> event
+    source --> vad --> feature --> asr --> event
 ```
 
 但设计上已经明确要扩展到可配置依赖关系，例如：
@@ -173,7 +183,7 @@ flowchart LR
   "depends_on": ["feature_stage", "vad_stage"],
   "join_policy": "all_of",
   "ops": [
-    { "id": "merge", "name": "UnknownMerge" }
+    { "id": "merge", "name": "JoinBarrier" }
   ]
 }
 ```
@@ -186,7 +196,7 @@ flowchart LR
    它负责把 `EngineRuntime` 暴露成更稳定的 API，并把 ASR/VAD/状态/告警统一包装成 `EngineEvent`。
 
 2. `EngineRuntime` 是真正的编排层。
-   它负责读取运行时配置、创建 source、初始化对应的 runtime 执行器、启动 source thread 和 event thread，并维护性能统计。
+   它负责读取运行时配置、创建底层输入 source、初始化对应的 runtime 执行器、启动 source thread 和 event thread，并维护性能统计。
 
 3. 新主线里，线性 stage 路径由 `PipelineExecutor + tf::Pipeline` 承载。
    stage 的执行语义由 runtime recipe 和静态 DAG 决定，真实处理由领域 stage 下挂的 core 完成。
@@ -217,6 +227,7 @@ flowchart LR
 
 - `PipelineExecutor` 负责线性 stage 路径，并把执行交给 `tf::Pipeline`
 - `RuntimeDagExecutor` 负责静态 DAG 的 `Branch/Join` 路由
+- `SourceStage` 负责把入口 source 纳入显式 stage DAG
 - 领域 `Stage` 是运行时边界，`Core` 负责真实处理
 - `EventStage` 负责把运行时结果统一转换成 `EngineEvent`
 - `parallel` 字段目前不直接驱动调度，实际并发主要来自 `pipeline_lines`、`max_concurrency` 和 core 自身实现
@@ -230,6 +241,12 @@ flowchart LR
   - `RuntimeDagExecutor`
   - `EventStage`
 - domain
+  - `domain/source/`
+    - `SourceStage`
+    - `PassThroughSourceCore`
+    - `FileSource`
+    - `MicrophoneSource`
+    - `StreamSource`
   - `domain/vad/`
     - `VadStage`
     - `SileroVadCore`
@@ -358,8 +375,8 @@ flowchart LR
 | `source.type` | 实际行为 |
 |------|------|
 | `file` | 使用 `FileSource`，再封装成 `AudioFramePipelineSource` |
-| `microphone` | 回退到默认 `MicSource` |
-| `stream` | 目前同样回退到默认 `MicSource`，还不是独立的 stream source 实现 |
+| `microphone` | 使用 `MicSource` |
+| `stream` | 使用独立的 `StreamSource`，适合外部手动推帧 |
 
 ## 推荐阅读顺序
 

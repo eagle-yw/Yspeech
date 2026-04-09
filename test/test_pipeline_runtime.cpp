@@ -42,6 +42,7 @@ TEST(PipelineRuntime, RecipeInferenceFromPipelineConfig) {
     nlohmann::json config = {
         {"name", "streaming_asr"},
         {"runtime", {{"pipeline_lines", 3}, {"pipeline_name", "runtime.pipeline"}}},
+        {"source", {{"type", "file"}, {"path", "audio.wav"}}},
         {"pipelines", {
             {
                 {"id", "vad_stage"},
@@ -75,12 +76,19 @@ TEST(PipelineRuntime, RecipeInferenceFromPipelineConfig) {
 
     EXPECT_EQ(builder_config.num_lines, 3u);
     EXPECT_EQ(builder_config.name, "streaming_asr");
-    ASSERT_EQ(builder_config.recipe.stages.size(), 3u);
+    ASSERT_EQ(builder_config.recipe.stages.size(), 4u);
+
+    const auto* source_stage = builder_config.recipe.stage_by_role(yspeech::PipelineStageRole::Source);
+    ASSERT_NE(source_stage, nullptr);
+    EXPECT_EQ(source_stage->stage_id, "source_stage");
+    ASSERT_EQ(source_stage->core_names.size(), 1u);
+    EXPECT_EQ(source_stage->core_names.front(), "FileSource");
 
     const auto* vad_stage = builder_config.recipe.stage_by_role(yspeech::PipelineStageRole::Vad);
     ASSERT_NE(vad_stage, nullptr);
     EXPECT_EQ(vad_stage->stage_id, "vad_stage");
     EXPECT_EQ(vad_stage->max_concurrency, 1u);
+    EXPECT_EQ(vad_stage->depends_on, std::vector<std::string>({"source_stage"}));
 
     const auto* feature_stage = builder_config.recipe.stage_by_role(yspeech::PipelineStageRole::Feature);
     ASSERT_NE(feature_stage, nullptr);
@@ -95,6 +103,7 @@ TEST(PipelineRuntime, RecipeInferenceFromPipelineConfig) {
 
 TEST(PipelineRuntime, UnknownMixedStageStaysUnknown) {
     nlohmann::json config = {
+        {"source", {{"type", "stream"}}},
         {"pipelines", {
             {
                 {"id", "mixed_stage"},
@@ -109,8 +118,44 @@ TEST(PipelineRuntime, UnknownMixedStageStaysUnknown) {
     auto pipeline_config = yspeech::PipelineConfig::from_json(config);
     auto builder_config = yspeech::make_pipeline_builder_config(pipeline_config, config);
 
-    ASSERT_EQ(builder_config.recipe.stages.size(), 1u);
-    EXPECT_EQ(builder_config.recipe.stages.front().role, yspeech::PipelineStageRole::Unknown);
+    ASSERT_EQ(builder_config.recipe.stages.size(), 2u);
+    const auto* source_stage = builder_config.recipe.stage_by_role(yspeech::PipelineStageRole::Source);
+    ASSERT_NE(source_stage, nullptr);
+    EXPECT_EQ(source_stage->core_names.front(), "StreamSource");
+    const auto* mixed_stage = builder_config.recipe.stage_by_id("mixed_stage");
+    ASSERT_NE(mixed_stage, nullptr);
+    EXPECT_EQ(mixed_stage->role, yspeech::PipelineStageRole::Unknown);
+}
+
+TEST(PipelineRuntime, ExplicitSourceStageIsRecognizedAsSourceRole) {
+    nlohmann::json config = {
+        {"pipelines", {
+            {
+                {"id", "capture_stage"},
+                {"ops", {{
+                    {"id", "capture"},
+                    {"name", "PassThroughSource"}
+                }}}
+            },
+            {
+                {"id", "vad_stage"},
+                {"depends_on", {"capture_stage"}},
+                {"ops", {{
+                    {"id", "vad"},
+                    {"name", "SileroVad"}
+                }}}
+            }
+        }}
+    };
+
+    auto pipeline_config = yspeech::PipelineConfig::from_json(config);
+    auto builder_config = yspeech::make_pipeline_builder_config(pipeline_config, config);
+
+    ASSERT_EQ(builder_config.recipe.stages.size(), 2u);
+    const auto* source_stage = builder_config.recipe.stage_by_role(yspeech::PipelineStageRole::Source);
+    ASSERT_NE(source_stage, nullptr);
+    EXPECT_EQ(source_stage->stage_id, "capture_stage");
+    EXPECT_EQ(source_stage->core_names.front(), "PassThroughSource");
 }
 
 TEST(PipelineRuntime, InvalidJoinPolicyIsRejectedByPipelineConfig) {
@@ -129,7 +174,7 @@ TEST(PipelineRuntime, InvalidJoinPolicyIsRejectedByPipelineConfig) {
                 {"join_policy", "first_ready"},
                 {"ops", {{
                     {"id", "merge"},
-                    {"name", "UnknownMerge"}
+                    {"name", "JoinBarrier"}
                 }}}
             }
         }}
@@ -223,7 +268,7 @@ TEST(PipelineRuntime, StageDagDependenciesArePreservedInRecipe) {
                 {"id", "capture_stage"},
                 {"ops", {{
                     {"id", "capture"},
-                    {"name", "UnknownSource"}
+                    {"name", "PassThroughSource"}
                 }}}
             },
             {
@@ -247,7 +292,7 @@ TEST(PipelineRuntime, StageDagDependenciesArePreservedInRecipe) {
                 {"depends_on", {"vad_stage"}},
                 {"ops", {{
                     {"id", "speaker"},
-                    {"name", "UnknownSpeaker"}
+                    {"name", "PassThroughBranch"}
                 }}}
             },
             {
@@ -255,7 +300,7 @@ TEST(PipelineRuntime, StageDagDependenciesArePreservedInRecipe) {
                 {"depends_on", {"feature_stage", "speaker_stage"}},
                 {"ops", {{
                     {"id", "merge"},
-                    {"name", "UnknownMerge"}
+                    {"name", "JoinBarrier"}
                 }}}
             }
         }}
@@ -311,7 +356,7 @@ TEST(PipelineRuntime, JoinPolicyIsPreservedInRecipeAndDagPlan) {
                 {"id", "capture_stage"},
                 {"ops", {{
                     {"id", "capture"},
-                    {"name", "UnknownSource"}
+                    {"name", "PassThroughSource"}
                 }}}
             },
             {
@@ -327,7 +372,7 @@ TEST(PipelineRuntime, JoinPolicyIsPreservedInRecipeAndDagPlan) {
                 {"depends_on", {"capture_stage"}},
                 {"ops", {{
                     {"id", "speaker"},
-                    {"name", "UnknownSpeaker"}
+                    {"name", "PassThroughBranch"}
                 }}}
             },
             {
@@ -336,7 +381,7 @@ TEST(PipelineRuntime, JoinPolicyIsPreservedInRecipeAndDagPlan) {
                 {"join_policy", "any_of"},
                 {"ops", {{
                     {"id", "merge"},
-                    {"name", "UnknownMerge"}
+                    {"name", "JoinBarrier"}
                 }}}
             }
         }}
@@ -371,7 +416,7 @@ TEST(PipelineRuntime, JoinTimeoutIsPreservedInRecipeAndDagPlan) {
                 {"id", "speaker_stage"},
                 {"ops", {{
                     {"id", "speaker"},
-                    {"name", "UnknownSpeaker"}
+                    {"name", "PassThroughBranch"}
                 }}}
             },
             {
@@ -381,7 +426,7 @@ TEST(PipelineRuntime, JoinTimeoutIsPreservedInRecipeAndDagPlan) {
                 {"join_timeout_ms", 25},
                 {"ops", {{
                     {"id", "merge"},
-                    {"name", "UnknownMerge"}
+                    {"name", "JoinBarrier"}
                 }}}
             }
         }}
@@ -584,7 +629,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesBranchOutputs) {
                 {"id", "capture_stage"},
                 {"ops", {{
                     {"id", "capture"},
-                    {"name", "UnknownSource"}
+                    {"name", "PassThroughSource"}
                 }}}
             },
             {
@@ -687,7 +732,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesJoinOutputs) {
                 {"id", "capture_stage"},
                 {"ops", {{
                     {"id", "capture"},
-                    {"name", "UnknownSource"}
+                    {"name", "PassThroughSource"}
                 }}}
             },
             {
@@ -711,7 +756,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesJoinOutputs) {
                 {"depends_on", {"vad_stage"}},
                 {"ops", {{
                     {"id", "speaker"},
-                    {"name", "UnknownSpeaker"}
+                    {"name", "PassThroughBranch"}
                 }}}
             },
             {
@@ -719,7 +764,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesJoinOutputs) {
                 {"depends_on", {"feature_stage", "speaker_stage"}},
                 {"ops", {{
                     {"id", "merge"},
-                    {"name", "UnknownMerge"}
+                    {"name", "JoinBarrier"}
                 }}}
             },
             {
@@ -810,7 +855,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesAnyOfJoinOutputs) {
                 {"id", "capture_stage"},
                 {"ops", {{
                     {"id", "capture"},
-                    {"name", "UnknownSource"}
+                    {"name", "PassThroughSource"}
                 }}}
             },
             {
@@ -835,7 +880,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesAnyOfJoinOutputs) {
                 {"join_policy", "any_of"},
                 {"ops", {{
                     {"id", "merge"},
-                    {"name", "UnknownMerge"}
+                    {"name", "JoinBarrier"}
                 }}}
             },
             {
@@ -907,7 +952,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesTimedOutAllOfJoinOutputs) {
                 {"id", "capture_stage"},
                 {"ops", {{
                     {"id", "capture"},
-                    {"name", "UnknownSource"}
+                    {"name", "PassThroughSource"}
                 }}}
             },
             {
@@ -933,7 +978,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesTimedOutAllOfJoinOutputs) {
                 {"join_timeout_ms", 0},
                 {"ops", {{
                     {"id", "merge"},
-                    {"name", "UnknownMerge"}
+                    {"name", "JoinBarrier"}
                 }}}
             },
             {

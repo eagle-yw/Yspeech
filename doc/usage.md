@@ -45,6 +45,32 @@ cmake --build build
   0.0
 ```
 
+### 外部推帧流式识别
+
+`source.type=stream` 适合由应用自己推送 `AudioFrame`，不依赖内置文件或麦克风 source。
+
+推荐配置：
+
+- `examples/configs/streaming_paraformer_asr_stream_source.json`
+
+示例：
+
+```cpp
+import yspeech.engine;
+
+yspeech::Engine engine("examples/configs/streaming_paraformer_asr_stream_source.json");
+engine.start();
+engine.push_frame(frame);
+engine.push_frame(eos_frame);
+engine.stop();
+```
+
+说明：
+
+- 这种模式下运行时会创建独立的 `StreamSource`
+- 更适合作为 SDK 集成入口
+- `streaming_demo` 默认使用内置 source 编排，不是演示 `source.type=stream` 的最佳入口
+
 ### Taskflow 静态 DAG 示例
 
 ```bash
@@ -190,13 +216,13 @@ EngineConfigOptions > 配置文件同名字段
 - 面向流式观察和 benchmark
 - 支持 `--queue`、`--benchmark`、`--ep`、`--ane-only`
 - 会打印 `ProcessingStats`
-- 性能表里看总耗时贡献时，优先看 `Operator Performance` 的 `% Task`，不是直接用 `Total / Processing Time`
+- 性能表里看总耗时贡献时，优先看 `Core Performance` 的 `% Task`，不是直接用 `Total / Processing Time`
 - 启动时会根据配置文件识别运行画像，并给出一致的模式提示
 
 行为约定：
 
 - `mode=streaming` 且带 ASR core 配置：允许运行
-- 无 `pipelines[].depends_on`：按单线流式 ASR 主线处理
+- 无显式多分支依赖：按单路径静态 DAG 主线处理
 - 声明了 `pipelines[].depends_on`：按静态 DAG 路径处理
 - `task=vad` 且只有 `SileroVad`：按 VAD-only 处理，只输出 VAD 事件
 - `mode=offline`：直接报错，提示改用 `simple_transcribe` 或 `transcribe_tool`
@@ -214,6 +240,7 @@ EngineConfigOptions > 配置文件同名字段
 - `examples/configs/offline_paraformer_asr.json`
 - `examples/configs/offline_sensevoice_asr.json`
 - `examples/configs/streaming_paraformer_asr.json`
+- `examples/configs/streaming_paraformer_asr_stream_source.json`
 - `examples/configs/streaming_paraformer_asr_capabilities.json`
 - `examples/configs/streaming_sensevoice_asr.json`
 - `examples/configs/streaming_paraformer_asr_dag.json`
@@ -238,7 +265,7 @@ EngineConfigOptions > 配置文件同名字段
 说明：
 
 - `pipeline_lines` 控制 Taskflow pipeline line 数
-- 纯线性配置会走单个 `PipelineExecutor`
+- 单路径静态 DAG 会走单个 `PipelineExecutor`
 - 声明了 `pipelines[].depends_on` 的 DAG 配置会走 `RuntimeDagExecutor`
 - 当前已经支持 `Branch + Join + join_timeout_ms`
 

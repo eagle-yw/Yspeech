@@ -67,7 +67,7 @@ sequenceDiagram
 
 ## 设计要点
 
-1. 输入源在 pipeline 之外。
+1. 底层输入源实现仍在 pipeline 之外，但运行时会把它编译成显式的 `SourceStage`。
 2. 最小流转单位是 `PipelineToken`，而不是共享 `Context` 里的临时键值。
 3. 线性段执行模型是“外层 source/event 线程 + `tf::Pipeline`”。
 4. 静态 DAG 的 branch/join 由 `RuntimeDagExecutor` 负责。
@@ -78,6 +78,7 @@ sequenceDiagram
 
 - `mode=offline` 会把文件 source 的实际 `playback_rate` 强制改成 `0.0`
 - `source.type=file` 使用 `FileSource + AudioFramePipelineSource`
-- `source.type=microphone` 和 `source.type=stream` 目前都会回退到默认 `MicSource`
+- `source.type=microphone` 使用 `MicSource`
+- `source.type=stream` 使用独立的 `StreamSource`
 
 详细设计说明见 [design.md](/Users/eagle/workspace/Playground/Yspeech/doc/design.md)。
