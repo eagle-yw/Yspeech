@@ -1,211 +1,93 @@
 {
-  "name": "ASR Recognition Pipeline",
+  "name": "Streaming Paraformer ASR Pipeline",
   "version": "1.0",
-  "description": "Speech recognition pipeline with multiple ASR model support",
+  "mode": "streaming",
+  "log_level": "info",
   "global": {
     "properties": {
-      "model_root": "./models",
-      "sample_rate": 16000,
-      "log_level": "INFO"
+      "model_root": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14",
+      "vad_model": "model/vad/silero_vad.onnx"
     }
+  },
+  "source": {
+    "type": "file",
+    "path": "${model_root}/test_wavs/0.wav",
+    "playback_rate": 20.0
+  },
+  "frame": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "dur_ms": 10
+  },
+  "stream": {
+    "ring_capacity_frames": 6000
   },
   "pipelines": [
     {
-      "id": "paraformer_asr",
-      "name": "ParaFormer ASR Pipeline",
-      "description": "Chinese speech recognition using ParaFormer",
-      "max_concurrency": 2,
+      "id": "vad_stage",
+      "name": "VAD Stage",
+      "max_concurrency": 4,
       "input": {
-        "key": "audio_buffer",
-        "chunk_size": 16000
-      },
-      "output": {
-        "key": "asr_results"
+        "key": "audio_frames",
+        "chunk_size": 1600
       },
       "ops": [
-        {
-          "id": "audio_converter",
-          "name": "AudioConverter",
-          "params": {
-            "input_buffer_key": "audio_buffer",
-            "output_buffer_key": "audio_planar",
-            "num_channels": 1,
-            "buffer_capacity": 960000
-          },
-          "parallel": false
-        },
-        {
-          "id": "feature_extract",
-          "name": "FeatureExtract",
-          "params": {
-            "input_buffer_key": "audio_planar",
-            "output_key": "feature",
-            "num_mel_bins": 80,
-            "frame_length": 400,
-            "frame_shift": 160,
-            "sample_rate": 16000
-          },
-          "parallel": false,
-          "depends_on": ["audio_converter"]
-        },
-        {
-          "id": "asr_paraformer",
-          "name": "AsrParaformer",
-          "params": {
-            "encoder_path": "${model_root}/paraformer/encoder.onnx",
-            "decoder_path": "${model_root}/paraformer/decoder.onnx",
-            "tokens_path": "${model_root}/paraformer/tokens.txt",
-            "language": "zh",
-            "sample_rate": 16000,
-            "num_threads": 4,
-            "input_buffer_key": "audio_planar",
-            "output_key": "asr"
-          },
-          "parallel": true,
-          "depends_on": ["feature_extract"]
-        }
-      ]
-    },
-    {
-      "id": "whisper_asr",
-      "name": "Whisper ASR Pipeline",
-      "description": "Multilingual speech recognition using Whisper",
-      "max_concurrency": 1,
-      "input": {
-        "key": "audio_buffer",
-        "chunk_size": 480000
-      },
-      "output": {
-        "key": "asr_results"
-      },
-      "ops": [
-        {
-          "id": "audio_converter",
-          "name": "AudioConverter",
-          "params": {
-            "input_buffer_key": "audio_buffer",
-            "output_buffer_key": "audio_planar",
-            "num_channels": 1,
-            "buffer_capacity": 960000
-          },
-          "parallel": false
-        },
-        {
-          "id": "asr_whisper",
-          "name": "AsrWhisper",
-          "params": {
-            "model_path": "${model_root}/whisper/whisper.onnx",
-            "tokens_path": "${model_root}/whisper/tokens.txt",
-            "language": "auto",
-            "task": "transcribe",
-            "detect_language": true,
-            "sample_rate": 16000,
-            "num_threads": 4,
-            "input_buffer_key": "audio_planar",
-            "output_key": "asr"
-          },
-          "parallel": true,
-          "depends_on": ["audio_converter"]
-        }
-      ]
-    },
-    {
-      "id": "sensevoice_asr",
-      "name": "SenseVoice ASR Pipeline",
-      "description": "Multilingual ASR with emotion detection",
-      "max_concurrency": 2,
-      "input": {
-        "key": "audio_buffer",
-        "chunk_size": 16000
-      },
-      "output": {
-        "key": "asr_results"
-      },
-      "ops": [
-        {
-          "id": "audio_converter",
-          "name": "AudioConverter",
-          "params": {
-            "input_buffer_key": "audio_buffer",
-            "output_buffer_key": "audio_planar",
-            "num_channels": 1,
-            "buffer_capacity": 960000
-          },
-          "parallel": false
-        },
-        {
-          "id": "asr_sensevoice",
-          "name": "AsrSenseVoice",
-          "params": {
-            "model_path": "${model_root}/sensevoice/model.onnx",
-            "tokens_path": "${model_root}/sensevoice/tokens.txt",
-            "language": "auto",
-            "detect_emotion": true,
-            "detect_itn": true,
-            "sample_rate": 16000,
-            "num_threads": 4,
-            "input_buffer_key": "audio_planar",
-            "output_key": "asr"
-          },
-          "parallel": true,
-          "depends_on": ["audio_converter"]
-        }
-      ]
-    },
-    {
-      "id": "vad_asr_pipeline",
-      "name": "VAD + ASR Pipeline",
-      "description": "Voice activity detection followed by ASR",
-      "max_concurrency": 2,
-      "input": {
-        "key": "audio_buffer",
-        "chunk_size": 512
-      },
-      "output": {
-        "key": "final_results"
-      },
-      "ops": [
-        {
-          "id": "audio_converter",
-          "name": "AudioConverter",
-          "params": {
-            "input_buffer_key": "audio_buffer",
-            "output_buffer_key": "audio_planar",
-            "num_channels": 1,
-            "buffer_capacity": 960000
-          },
-          "parallel": false
-        },
         {
           "id": "silero_vad",
           "name": "SileroVad",
           "params": {
-            "model_path": "${model_root}/vad/silero_vad.onnx",
+            "model_path": "${vad_model}",
             "threshold": 0.5,
             "sample_rate": 16000,
-            "input_buffer_key": "audio_planar",
-            "output_key": "vad",
+            "input_frame_key": "audio_frames",
             "min_speech_duration_ms": 250,
             "min_silence_duration_ms": 100
-          },
-          "parallel": true,
-          "depends_on": ["audio_converter"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "asr_stage",
+      "name": "ASR Stage",
+      "max_concurrency": 4,
+      "input": {
+        "key": "audio_frames"
+      },
+      "ops": [
+        {
+          "id": "fbank",
+          "name": "KaldiFbank",
+          "params": {
+            "num_bins": 80,
+            "sample_rate": 16000,
+            "frame_length_ms": 25,
+            "frame_shift_ms": 10,
+            "dither": 0,
+            "snip_edges": false,
+            "input_frame_key": "audio_frames",
+            "output_key": "fbank",
+            "lfr_window_size": 7,
+            "lfr_window_shift": 6,
+            "cmvn_file": "${model_root}/am.mvn",
+            "enable_accumulation": true,
+            "min_accumulated_frames": 15,
+            "max_accumulated_frames": 100
+          }
         },
         {
-          "id": "asr_paraformer",
+          "id": "paraformer_asr",
           "name": "AsrParaformer",
           "params": {
-            "encoder_path": "${model_root}/paraformer/encoder.onnx",
-            "decoder_path": "${model_root}/paraformer/decoder.onnx",
-            "tokens_path": "${model_root}/paraformer/tokens.txt",
-            "language": "zh",
+            "model_path": "${model_root}/model.int8.onnx",
+            "tokens_path": "${model_root}/tokens.txt",
+            "feature_input_key": "fbank",
             "sample_rate": 16000,
-            "num_threads": 4,
-            "input_buffer_key": "audio_planar",
-            "output_key": "asr"
+            "language": "zh",
+            "execution_provider": "cpu",
+            "num_threads": 2,
+            "min_new_feature_frames": 12
           },
-          "parallel": true,
-          "depends_on": ["silero_vad"]
+          "depends_on": ["fbank"]
         }
       ]
     }

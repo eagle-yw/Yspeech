@@ -130,10 +130,6 @@ public:
                  operators_.size());
     }
     
-    void run(Context& ctx) {
-        throw std::runtime_error("Batch pipeline execution has been removed; use run_stream()");
-    }
-
     void run_stream(Context& ctx, StreamStore& store, bool flush) {
         execute(ctx, &store, flush);
     }
@@ -290,7 +286,6 @@ public:
     PipelineManager() = default;
     
     ~PipelineManager() {
-        stop();
         clear();
     }
 
@@ -324,15 +319,6 @@ public:
         log_debug("PipelineManager built with {} stage(s)", stages_.size());
     }
     
-    void run(Context& ctx) {
-        if (stages_.empty()) {
-            log_warn("PipelineManager has no stages to run");
-            return;
-        }
-
-        throw std::runtime_error("Batch pipeline execution has been removed; use run_stream()");
-    }
-
     void run_stream(Context& ctx, StreamStore& store, bool flush = false) {
         if (stages_.empty()) {
             log_warn("PipelineManager has no stages to run");
@@ -346,27 +332,6 @@ public:
         }
     }
     
-    void start_async(Context& ctx) {
-        if (running_) return;
-        
-        running_ = true;
-        runner_thread_ = std::thread([this, &ctx]() {
-            run(ctx);
-        });
-    }
-    
-    void stop() {
-        running_ = false;
-        
-        if (ctx_) {
-            ctx_->stop_data();
-        }
-        
-        if (runner_thread_.joinable()) {
-            runner_thread_.join();
-        }
-    }
-    
     void clear() {
         for (auto& stage : stages_) {
             stage->clear();
@@ -374,7 +339,6 @@ public:
         stages_.clear();
     }
     
-    bool is_running() const { return running_; }
     bool is_single_stage() const { return config_.is_single_stage(); }
     size_t stage_count() const { return stages_.size(); }
     
@@ -410,8 +374,6 @@ private:
     PipelineConfig config_;
     std::vector<std::unique_ptr<detail::PipelineStage>> stages_;
     std::vector<AspectIface> aspects_;
-    std::atomic<bool> running_{false};
-    std::thread runner_thread_;
     Context* ctx_ = nullptr;
 
     void init_buffers() {
@@ -439,22 +401,10 @@ private:
         ctx_ = nullptr;
     }
 
-    void run_single_stage(Context& ctx) {
-        ctx_ = &ctx;
-        stages_[0]->run(ctx);
-        ctx_ = nullptr;
-    }
-
     void run_stream_single_stage(Context& ctx, StreamStore& store, bool flush) {
         ctx_ = &ctx;
         stages_[0]->run_stream(ctx, store, flush);
         ctx_ = nullptr;
-    }
-
-    void run_multi_stage(Context& ctx) {
-        run_stage_threads(ctx, [](detail::PipelineStage& stage, Context& stage_ctx) {
-            stage.run(stage_ctx);
-        });
     }
 
     void run_stream_multi_stage(Context& ctx, StreamStore& store, bool flush) {
@@ -463,7 +413,5 @@ private:
         });
     }
 };
-
-export using Pipeline [[deprecated("Use PipelineManager instead")]] = PipelineManager;
 
 }

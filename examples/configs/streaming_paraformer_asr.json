@@ -16,25 +16,14 @@
   "stream": {
     "ring_capacity_frames": 6000
   },
-  "pipeline": {
-    "push_chunk_samples": 1600
-  },
-  "output": {
-    "type": "callback",
-    "include_segments": true,
-    "include_timestamp": true
-  },
   "pipelines": [
     {
       "id": "vad_stage",
       "name": "VAD Detection Stage",
       "max_concurrency": 4,
       "input": {
-        "key": "audio_buffer",
+        "key": "audio_frames",
         "chunk_size": 1600
-      },
-      "output": {
-        "key": "vad_results"
       },
       "ops": [
         {
@@ -47,8 +36,7 @@
             "input_frame_key": "audio_frames",
             "min_speech_duration_ms": 250,
             "min_silence_duration_ms": 100
-          },
-          "parallel": true
+          }
         }
       ]
     },
@@ -57,10 +45,7 @@
       "name": "ASR Recognition Stage",
       "max_concurrency": 4,
       "input": {
-        "key": "vad_results"
-      },
-      "output": {
-        "key": "asr_results"
+        "key": "audio_frames"
       },
       "ops": [
         {
@@ -96,10 +81,7 @@
             "num_threads": 2,
             "min_new_feature_frames": 12
           },
-          "parallel": false,
-          "depends_on": [
-            "fbank"
-          ]
+          "depends_on": ["fbank"]
         }
       ]
     }

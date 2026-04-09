@@ -1,48 +1,31 @@
 # Yspeech
 
-**Yspeech** 是一个基于 C++23 模块的现代化语音处理管道框架，支持流式处理和两级 Pipeline 架构。
+**Yspeech** 是一个基于 C++23 模块的现代化语音处理管道框架，当前以流式 `AudioFrame` 处理和配置驱动的 operator 编排为核心。
 
-## ✨ 核心特性
+## 核心特性
 
-- 🚀 **C++23 模块** - 使用现代 C++ 模块系统
-- 🔄 **流式处理** - 基于 RingBuffer 的流式数据管道
-- 📊 **两级 Pipeline** - 支持多级流水线并行处理
-- 🎯 **配置驱动** - JSON 配置定义 Pipeline 结构
-- ⚡ **高性能** - Taskflow 并行执行，自动优化
-- 🔧 **灵活扩展** - Operator/Capability/Aspect 系统
-
-## 📋 目录
-
-- [快速开始](#快速开始)
-- [文档](#文档)
-- [使用示例](#使用示例)
-- [许可证](#许可证)
-
-## 👥 作者
-
-**作者**: AI
-**参与模型**: deepseek, glm, gemini, gpt-codex, minimax, qwen-3.5plus
+- C++23 模块
+- `AudioFrame` 流式处理
+- `Taskflow` 驱动的 stage/operator 调度
+- JSON 配置驱动
+- `Engine` 统一事件、状态和性能回调
+- 可扩展的 Operator / Capability / Aspect 体系
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 构建
 
 ```bash
-# 系统要求
-- CMake 3.30+
-- Clang/LLVM (支持 C++23 模块)
-- Ninja 构建系统
-```
-
-### 2. 构建项目
-
-```bash
-# 首次构建（自动下载依赖）
 cmake -B build -G Ninja
 cmake --build build
+```
 
-# 后续构建（使用预编译依赖）
-cmake --build build
+### 2. 运行示例
+
+```bash
+./build/examples/simple_transcribe \
+  examples/configs/offline_paraformer_asr.json \
+  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
 ```
 
 ### 3. 运行测试
@@ -53,97 +36,55 @@ cmake --build build
 
 ## 文档
 
-详细的设计开发文档请参考 `doc/` 目录：
+文档按两类整理，优先从这两份总览开始：
 
-- [架构设计](doc/architecture.md) - 核心架构和设计原则
-- [配置说明](doc/configuration.md) - 配置文件结构和字段说明
-- [核心组件](doc/components.md) - 主要组件和使用方法
-- [构建系统](doc/build.md) - 构建选项和目标
-- [性能优化](doc/performance.md) - 性能优化建议和基准测试
-- [测试](doc/testing.md) - 测试方法和命令
-- [故障排查](doc/troubleshooting.md) - 常见问题和解决方案
-- [贡献指南](doc/contributing.md) - 如何贡献代码
+- 设计文档
+  - [设计文档](doc/design.md) - 代码设计、运行链路、配置生效边界
+  - [架构设计](doc/architecture.md) - 系统结构和时序
+  - [核心组件](doc/components.md) - `Engine`、`EngineRuntime`、`PipelineManager` 等职责划分
+  - [配置说明](doc/configuration.md) - 配置字段、实际生效项和限制
+  - [性能说明](doc/performance.md) - 统计项、benchmark 用法和调优关注点
+- 使用说明
+  - [使用说明](doc/usage.md) - 构建、运行、生命周期、常见限制
+  - [示例程序](examples/README.md) - `simple_transcribe`、`streaming_demo`、`transcribe_tool`
+  - [示例配置](examples/configs/README.md) - 哪些配置可直接运行，哪些需要额外处理
+  - [测试](doc/testing.md) - 测试命令与筛选方式
+  - [故障排查](doc/troubleshooting.md) - 常见问题
+  - [贡献指南](doc/contributing.md) - 仓库协作约定
 
-## 使用示例
-
-### 示例 1：单级 Pipeline
-
-```json
-{
-  "name": "Simple ASR Pipeline",
-  "version": "1.0",
-  "pipelines": [
-    {
-      "id": "asr_stage",
-      "max_concurrency": 4,
-      "input": {
-        "key": "audio_buffer",
-        "chunk_size": 1600
-      },
-      "output": {
-        "key": "asr_results"
-      },
-      "ops": [
-        {
-          "id": "vad_op",
-          "name": "VadStream",
-          "params": {
-            "threshold": 0.5
-          },
-          "parallel": true
-        },
-        {
-          "id": "feature_op",
-          "name": "FeatureExtract",
-          "params": {
-            "num_mel_bins": 80
-          },
-          "parallel": true,
-          "depends_on": ["vad_op"]
-        },
-        {
-          "id": "asr_op",
-          "name": "AsrInference",
-          "params": {
-            "model_path": "${model_root}/conformer.onnx"
-          },
-          "parallel": false,
-          "depends_on": ["feature_op"]
-        }
-      ]
-    }
-  ]
-}
-```
-
-### C++ 使用示例
+## 最小使用示例
 
 ```cpp
-#include <yspeech/yspeech.cppm>
+import std;
+import yspeech.engine;
 
 int main() {
-    // 创建 Engine
-    yspeech::Engine engine;
-    
-    // 初始化（加载配置）
-    engine.init("pipeline_config.json");
-    
-    // 创建 Context
-    yspeech::Context ctx;
-    
-    // 运行 Pipeline
-    engine.run(ctx);
-    
-    return 0;
+    yspeech::EngineConfigOptions options;
+    options.audio_path = "audio.wav";
+    options.playback_rate = 0.0;
+
+    yspeech::Engine engine("examples/configs/offline_paraformer_asr.json", options);
+    engine.on_event([](const yspeech::EngineEvent& event) {
+        if (event.asr && event.kind == yspeech::EngineEventKind::ResultStreamFinal) {
+            std::println("{}", event.asr->text);
+        }
+    });
+
+    engine.start();
+    engine.finish();
+    engine.stop();
 }
 ```
 
-## 许可证
+## 当前实现的几个重要事实
 
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
+- 主执行入口是 `run_stream(ctx, store, flush)`
+- 当前已注册 operator 只有 `SileroVad`、`KaldiFbank`、`AsrParaformer`、`AsrSenseVoice`、`AsrWhisper`
+- 顶层 `output`、`pipeline.push_chunk_samples`、`ops[].parallel` 目前不应被理解为稳定自动行为
 
 ## 致谢
 
-- [Taskflow](https://github.com/taskflow/taskflow) - 并行任务图框架
-- [nlohmann/json](https://github.com/nlohmann/json) - JSON 库
-- [ONNX Runtime](https://onnxruntime.ai/) - ML 推理引擎
+- Taskflow
+- nlohmann/json
+- ONNX Runtime
+- kaldi-native-fbank

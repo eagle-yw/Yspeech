@@ -3,6 +3,24 @@
 #include <nlohmann/json.hpp>
 import yspeech;
 
+namespace {
+
+struct TestErrorNoopOp {
+    void init(const nlohmann::json&) {
+    }
+
+    auto process_stream(yspeech::Context&, yspeech::StreamStore&) -> yspeech::StreamProcessResult {
+        return {
+            .status = yspeech::StreamProcessStatus::ProducedOutput,
+            .wake_downstream = true
+        };
+    }
+};
+
+yspeech::OperatorRegistrar<TestErrorNoopOp> test_error_noop_registrar("TestErrorNoopOp");
+
+} // namespace
+
 TEST(ErrorTest, ErrorCodeConversion) {
     EXPECT_EQ(yspeech::error_code_to_string(yspeech::ErrorCode::Success), "Success");
     EXPECT_EQ(yspeech::error_code_to_string(yspeech::ErrorCode::Unknown), "Unknown");
@@ -313,9 +331,17 @@ TEST(PipelineIntegration, ErrorRecoveryWithMetadata) {
     nlohmann::json config = {
         {"name", "test_pipeline"},
         {"version", "1.0"},
-        {"ops", {
-            {{"id", "op1"}, {"name", "Vad"}}
-        }}
+        {"pipelines", nlohmann::json::array({
+            {
+                {"id", "stage1"},
+                {"ops", nlohmann::json::array({
+                    {
+                        {"id", "op1"},
+                        {"name", "TestErrorNoopOp"}
+                    }
+                })}
+            }
+        })}
     };
     
     pipeline.build(yspeech::PipelineConfig::from_json(config));

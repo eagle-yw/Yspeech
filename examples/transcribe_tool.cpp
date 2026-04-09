@@ -10,7 +10,7 @@ void show_help() {
     std::println("  --help       显示帮助");
     std::println("");
     std::println("示例:");
-    std::println("  transcribe examples/configs/simple_asr.json audio.wav");
+    std::println("  transcribe examples/configs/offline_paraformer_asr.json audio.wav");
     std::println("  transcribe examples/configs/two_level_asr.json recording.wav --verbose");
 }
 

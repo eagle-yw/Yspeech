@@ -1,11 +1,13 @@
 {
-    "ops": [
+    "pipelines": [
         {
-            "id": "op1",
-            "name": "Vad",
-            "params": {
-                "model_path": "dummy"
-            }
+            "id": "stage1",
+            "ops": [
+                {
+                    "id": "op1",
+                    "name": "TestAspectOp"
+                }
+            ]
         }
     ]
 }

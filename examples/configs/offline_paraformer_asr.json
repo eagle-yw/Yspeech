@@ -11,25 +11,14 @@
     "channels": 1,
     "dur_ms": 10
   },
-  "pipeline": {
-    "push_chunk_samples": -1
-  },
-  "output": {
-    "type": "text",
-    "include_segments": true,
-    "include_timestamp": true
-  },
   "pipelines": [
     {
       "id": "asr_stage",
       "name": "ASR Recognition Stage",
       "max_concurrency": 1,
       "input": {
-        "key": "audio_buffer",
-        "chunk_size": -1
-      },
-      "output": {
-        "key": "asr_results"
+        "key": "audio_frames",
+        "chunk_size": 1600
       },
       "ops": [
         {

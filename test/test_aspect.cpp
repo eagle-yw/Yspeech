@@ -1,12 +1,31 @@
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include <fstream>
+#include <nlohmann/json.hpp>
 
 import yspeech;
 import yspeech.stream_store;
 import std;
 
 using namespace yspeech;
+
+namespace {
+
+struct TestAspectOp {
+    void init(const nlohmann::json&) {
+    }
+
+    auto process_stream(Context&, StreamStore&) -> StreamProcessResult {
+        return {
+            .status = StreamProcessStatus::ProducedOutput,
+            .wake_downstream = true
+        };
+    }
+};
+
+OperatorRegistrar<TestAspectOp> test_aspect_op_registrar("TestAspectOp");
+
+} // namespace
 
 class MockAspect {
 public:
@@ -18,8 +37,13 @@ TEST(AspectTest, BasicFlow) {
     std::string config_path = "test_aspect_config.json";
     std::ofstream f(config_path);
     f << R"({
-        "ops": [
-            { "id": "op1", "name": "Vad", "params": { "model_path": "dummy" } }
+        "pipelines": [
+            {
+                "id": "stage1",
+                "ops": [
+                    { "id": "op1", "name": "TestAspectOp" }
+                ]
+            }
         ]
     })";
     f.close();
@@ -61,7 +85,12 @@ TEST(AspectTest, MultipleAspectsOrder) {
     std::string config_path = "test_aspect_order.json";
     std::ofstream f(config_path);
     f << R"({
-        "ops": [ { "id": "op1", "name": "Vad" } ]
+        "pipelines": [
+            {
+                "id": "stage1",
+                "ops": [ { "id": "op1", "name": "TestAspectOp" } ]
+            }
+        ]
     })";
     f.close();
 

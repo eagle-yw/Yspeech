@@ -8,7 +8,7 @@ import yspeech.types;
 namespace {
 
 struct DemoOptions {
-    std::string config_file = "configs/streaming_asr.json";
+    std::string config_file = "examples/configs/streaming_paraformer_asr.json";
     std::string audio_file = "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav";
     double playback_rate = 1.0;
     bool enable_event_queue = true;
@@ -23,13 +23,12 @@ auto parse_bool_flag(const std::string& value) -> bool {
 }
 
 void print_help(const char* program) {
-    std::println("用法: {} [config] [audio] [playback_rate] [queue_flag] [选项]", program);
+    std::println("用法: {} [config] [audio] [playback_rate] [选项]", program);
     std::println("");
     std::println("位置参数:");
     std::println("  config         配置文件路径");
     std::println("  audio          音频文件路径");
     std::println("  playback_rate  音频推送倍率，1.0 为实时，20 为 20 倍速");
-    std::println("  queue_flag     兼容旧参数: 1/0 或 true/false，控制 internal event queue");
     std::println("");
     std::println("选项:");
     std::println("  --queue <bool>        显式设置 internal event queue");
@@ -87,10 +86,6 @@ auto parse_args(int argc, char* argv[]) -> DemoOptions {
             continue;
         }
 
-        // Backward compatibility: positional queue flag at argv[4]
-        if (i == 4) {
-            opts.enable_event_queue = parse_bool_flag(arg);
-        }
     }
 
     if (opts.benchmark_runs > 0) {

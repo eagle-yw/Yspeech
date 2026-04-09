@@ -18,7 +18,6 @@ target_sources(yspeech
     yspeech/aspects/timer.cppm
     yspeech/op.cppm
     yspeech/op/ort_symbol_lookup.cppm
-    yspeech/op/vad/vad.cppm
     yspeech/op/vad/silero.cppm
     yspeech/op/asr/base.cppm
     yspeech/op/asr/paraformer.cppm

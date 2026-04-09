@@ -1,96 +1,93 @@
 {
-  "name": "Two-Level ASR Pipeline",
+  "name": "Two-Level Paraformer ASR",
   "version": "1.0",
   "mode": "streaming",
+  "log_level": "info",
   "global": {
     "properties": {
-      "model_root": "./models",
-      "sample_rate": 16000,
-      "log_level": "INFO"
+      "model_root": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14",
+      "vad_model": "model/vad/silero_vad.onnx"
     }
   },
   "source": {
     "type": "file",
-    "path": "audio.wav"
+    "path": "${model_root}/test_wavs/0.wav",
+    "playback_rate": 20.0
   },
   "frame": {
     "sample_rate": 16000,
     "channels": 1,
     "dur_ms": 10
   },
-  "pipeline": {
-    "push_chunk_samples": 1600
-  },
-  "output": {
-    "type": "json",
-    "file": "asr_output.json",
-    "include_segments": true,
-    "include_timestamp": true,
-    "include_confidence": true
+  "stream": {
+    "ring_capacity_frames": 6000
   },
   "pipelines": [
     {
-      "id": "preprocess",
-      "name": "Preprocessing Pipeline",
-      "max_concurrency": 8,
+      "id": "vad_stage",
+      "name": "VAD Stage",
+      "max_concurrency": 4,
       "input": {
-        "key": "audio_buffer",
+        "key": "audio_frames",
         "chunk_size": 1600
-      },
-      "output": {
-        "key": "features_buffer"
       },
       "ops": [
         {
-          "id": "vad_op",
-          "name": "VadStream",
+          "id": "silero_vad",
+          "name": "SileroVad",
           "params": {
+            "model_path": "${vad_model}",
             "threshold": 0.5,
-            "min_speech_duration_ms": 250
-          },
-          "parallel": true
-        },
-        {
-          "id": "feature_op",
-          "name": "FeatureExtract",
-          "params": {
-            "feature_type": "fbank",
-            "num_mel_bins": 80
-          },
-          "parallel": true,
-          "depends_on": ["vad_op"]
+            "sample_rate": 16000,
+            "input_frame_key": "audio_frames",
+            "min_speech_duration_ms": 250,
+            "min_silence_duration_ms": 100
+          }
         }
       ]
     },
     {
-      "id": "inference",
-      "name": "Inference Pipeline",
+      "id": "asr_stage",
+      "name": "ASR Stage",
       "max_concurrency": 4,
       "input": {
-        "key": "features_buffer"
-      },
-      "output": {
-        "key": "asr_results"
+        "key": "audio_frames"
       },
       "ops": [
         {
-          "id": "asr_op",
-          "name": "AsrParaformer",
+          "id": "fbank",
+          "name": "KaldiFbank",
           "params": {
-            "model_path": "${model_root}/paraformer.onnx",
-            "beam_size": 10
-          },
-          "parallel": false
+            "num_bins": 80,
+            "sample_rate": 16000,
+            "frame_length_ms": 25,
+            "frame_shift_ms": 10,
+            "dither": 0,
+            "snip_edges": false,
+            "input_frame_key": "audio_frames",
+            "output_key": "fbank",
+            "lfr_window_size": 7,
+            "lfr_window_shift": 6,
+            "cmvn_file": "${model_root}/am.mvn",
+            "enable_accumulation": true,
+            "min_accumulated_frames": 15,
+            "max_accumulated_frames": 100
+          }
         },
         {
-          "id": "post_op",
-          "name": "PostProcess",
+          "id": "paraformer_asr",
+          "name": "AsrParaformer",
           "params": {
-            "format": "text",
-            "punctuation": true
+            "model_path": "${model_root}/model.int8.onnx",
+            "tokens_path": "${model_root}/tokens.txt",
+            "feature_input_key": "fbank",
+            "sample_rate": 16000,
+            "language": "zh",
+            "execution_provider": "cpu",
+            "num_threads": 2,
+            "min_new_feature_frames": 12
           },
-          "parallel": false,
-          "depends_on": ["asr_op"]
+          "depends_on": ["fbank"]
         }
       ]
     }

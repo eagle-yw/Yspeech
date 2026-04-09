@@ -7,7 +7,7 @@ int main(int argc, char* argv[]) {
     
     if (argc < 3) {
         std::println("用法：{} <配置文件> <音频文件>", argv[0]);
-        std::println("示例：{} configs/simple_asr.json audio.wav", argv[0]);
+        std::println("示例：{} examples/configs/offline_paraformer_asr.json audio.wav", argv[0]);
         return 1;
     }
     

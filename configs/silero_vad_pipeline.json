@@ -1,12 +1,19 @@
 {
   "name": "Silero VAD Pipeline",
   "version": "1.0",
+  "log_level": "info",
   "global": {
     "properties": {
-      "model_root": "./models",
-      "sample_rate": 16000,
-      "log_level": "INFO"
+      "model_root": "model/vad"
     }
+  },
+  "frame": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "dur_ms": 10
+  },
+  "stream": {
+    "ring_capacity_frames": 6000
   },
   "pipelines": [
     {
@@ -14,24 +21,10 @@
       "name": "VAD Detection Stage",
       "max_concurrency": 4,
       "input": {
-        "key": "audio_buffer",
+        "key": "audio_frames",
         "chunk_size": 1600
       },
-      "output": {
-        "key": "vad_results"
-      },
       "ops": [
-        {
-          "id": "audio_converter",
-          "name": "AudioConverter",
-          "params": {
-            "input_buffer_key": "audio_buffer",
-            "output_buffer_key": "audio_planar",
-            "num_channels": 1,
-            "buffer_capacity": 960000
-          },
-          "parallel": false
-        },
         {
           "id": "silero_vad",
           "name": "SileroVad",
@@ -39,13 +32,10 @@
             "model_path": "${model_root}/silero_vad.onnx",
             "threshold": 0.5,
             "sample_rate": 16000,
-            "input_buffer_key": "audio_planar",
-            "output_key": "vad",
+            "input_frame_key": "audio_frames",
             "min_speech_duration_ms": 250,
             "min_silence_duration_ms": 100
-          },
-          "parallel": true,
-          "depends_on": ["audio_input"]
+          }
         }
       ]
     }

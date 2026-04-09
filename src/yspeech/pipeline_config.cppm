@@ -209,16 +209,9 @@ inline ConfigValidationResult validate_config(const nlohmann::json& config) {
             }
             result.warnings.insert(result.warnings.end(), stage_result.warnings.begin(), stage_result.warnings.end());
         }
-    } else if (config.contains("ops")) {
-        auto ops_result = validate_ops(config["ops"]);
-        if (!ops_result.valid) {
-            result.valid = false;
-            result.errors.insert(result.errors.end(), ops_result.errors.begin(), ops_result.errors.end());
-        }
-        result.warnings.insert(result.warnings.end(), ops_result.warnings.begin(), ops_result.warnings.end());
     } else {
         result.valid = false;
-        result.errors.push_back("Config must contain either 'pipelines' or 'ops' field");
+        result.errors.push_back("Config must contain 'pipelines' field");
     }
     
     if (config.contains("global")) {
@@ -392,14 +385,6 @@ public:
             for (const auto& stage : config["pipelines"]) {
                 cfg.stages_.push_back(PipelineStageConfig::from_json(stage, cfg.properties_));
             }
-        } else if (config.contains("ops")) {
-            PipelineStageConfig single_stage;
-            single_stage = PipelineStageConfig::from_json(
-                {{"id", "default_stage"}, {"ops", config["ops"]}},
-                cfg.properties_
-            );
-            cfg.stages_.push_back(std::move(single_stage));
-            cfg.legacy_mode_ = true;
         }
         
         return cfg;
@@ -412,7 +397,6 @@ public:
     const std::vector<PipelineStageConfig>& stages() const { return stages_; }
     
     bool is_single_stage() const { return stages_.size() == 1; }
-    bool is_legacy_mode() const { return legacy_mode_; }
     
     const PipelineStageConfig& stage(size_t index) const {
         return stages_.at(index);
@@ -434,7 +418,6 @@ private:
     nlohmann::json properties_;
     nlohmann::json capabilities_;
     std::vector<PipelineStageConfig> stages_;
-    bool legacy_mode_ = false;
 };
 
 }
