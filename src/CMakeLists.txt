@@ -13,19 +13,37 @@ target_sources(yspeech
     yspeech/context.cppm
     yspeech/log.cppm
     yspeech/capability.cppm
+    yspeech/capabilities/alert.cppm
+    yspeech/capabilities/logger.cppm
+    yspeech/capabilities/status.cppm
     yspeech/aspect.cppm
     yspeech/aspects/logger.cppm
     yspeech/aspects/timer.cppm
-    yspeech/op.cppm
-    yspeech/op/ort_symbol_lookup.cppm
-    yspeech/op/vad/silero.cppm
-    yspeech/op/asr/base.cppm
-    yspeech/op/asr/paraformer.cppm
-    yspeech/op/asr/whisper.cppm
-    yspeech/op/asr/sensevoice.cppm
-    yspeech/op/feature/kaldi_fbank.cppm
+    yspeech/stream_process.cppm
+    yspeech/onnx/ort_symbol_lookup.cppm
+    yspeech/domain/vad/base.cppm
+    yspeech/domain/vad/silero.cppm
+    yspeech/domain/vad/stage.cppm
+    yspeech/domain/asr/base.cppm
+    yspeech/domain/asr/paraformer.cppm
+    yspeech/domain/asr/stage.cppm
+    yspeech/domain/asr/whisper.cppm
+    yspeech/domain/asr/sensevoice.cppm
+    yspeech/domain/feature/base.cppm
+    yspeech/domain/feature/kaldi_fbank.cppm
+    yspeech/domain/feature/stage.cppm
+    yspeech/runtime/token.cppm
+    yspeech/runtime/segment_state.cppm
+    yspeech/runtime/segment_registry.cppm
+    yspeech/runtime/runtime_context.cppm
+    yspeech/runtime/event_record.cppm
+    yspeech/runtime/pipeline_recipe.cppm
+    yspeech/runtime/runtime_dag.cppm
+    yspeech/runtime/runtime_dag_executor.cppm
+    yspeech/runtime/pipeline_builder.cppm
+    yspeech/runtime/pipeline_executor.cppm
+    yspeech/runtime/event_stage.cppm
     yspeech/pipeline_config.cppm
-    yspeech/pipeline_manager.cppm
     yspeech/frame_source.cppm
     yspeech/engine_runtime.cppm
     yspeech/engine.cppm
@@ -34,8 +52,7 @@ target_sources(yspeech
     yspeech/performance_export.cppm
     yspeech/resource_monitor.cppm
     yspeech/performance_alert.cppm
-    yspeech/runtime_common.cppm
-    yspeech/operators.cppm
+    yspeech/runtime/common.cppm
     yspeech/yspeech.cppm
 )
 

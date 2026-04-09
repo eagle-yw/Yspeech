@@ -102,12 +102,18 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
 
 ## global
 
-`global.properties` 用于变量替换，`global.capabilities` 会在 stage 构建时尝试安装到每个 operator。
+`global.properties` 用于变量替换，`global.capabilities` 会在 stage 构建时安装到每个处理节点，并和节点级 capability 一起按 `Pre/Post` 顺序执行。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `properties` | object | 变量池 |
 | `capabilities` | array | 全局 capability 列表，每项包含 `name` 和可选 `params` |
+
+说明：
+
+- `Capability` 是配置驱动的节点扩展
+- 它和 `Aspect` 一样都能挂在 `Stage -> Core` 边界
+- 但推荐把“框架统一关注点”放到 `Aspect`，把“按配置启停的节点行为”放到 `Capability`
 
 ### 变量替换
 
@@ -125,9 +131,12 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
 | `id` | string | 是 | 阶段唯一标识 |
 | `name` | string | 否 | 阶段名称 |
 | `max_concurrency` | int | 否 | stage executor 线程数，默认 8 |
+| `depends_on` | array | 否 | stage 级依赖关系，描述静态 DAG 边 |
+| `join_policy` | string | 否 | join 节点策略，当前支持 `all_of` / `any_of` |
+| `join_timeout_ms` | int | 否 | join 等待超时，当前仅作为 DAG 语义层的提前放行条件 |
 | `input` | object | 否 | 输入元数据 |
 | `output` | object | 否 | 输出元数据 |
-| `ops` | array | 是 | Operator 列表 |
+| `ops` | array | 是 | stage 内处理节点列表 |
 
 `input` 常见字段：
 
@@ -147,18 +156,50 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
 - `input`/`output` 字段当前会被解析保存
 - 但主执行链路没有基于这些字段建立完整 stage 间数据路由
 - 它们更适合当作配置语义说明，而不是当前稳定功能承诺
+- `depends_on` 会在启动期编译成静态 DAG，运行期结构不再变化
+- 线性子路径由 `tf::Pipeline` 执行，`Branch/Join` 由 `RuntimeDagExecutor` 处理
+
+### join_policy
+
+仅对多入边 stage 生效。
+
+| 值 | 语义 |
+|------|------|
+| `all_of` | 等所有上游同 key 结果到齐后再继续 |
+| `any_of` | 任一上游结果到达即可继续，后续同 key 默认不重复触发 |
+
+### join_timeout_ms
+
+- 仅对 `Join` 节点生效
+- 单位毫秒
+- `0` 表示第一次检查就允许超时放行
+- 当前实现不会额外启动定时线程，而是在新的 join 贡献到达时检查是否超过超时阈值
+- 这意味着它是“轻量的超时放行语义”，不是独立的调度器
+
+示例：
+
+```json
+{
+  "id": "merge_stage",
+  "depends_on": ["vad_stage", "feature_stage"],
+  "join_policy": "all_of",
+  "ops": [
+    { "id": "merge", "name": "UnknownMerge" }
+  ]
+}
+```
 
 ## ops
 
-每个 operator 的字段如下：
+每个处理节点的字段如下：
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `id` | string | 是 | Operator 唯一标识 |
-| `name` | string | 是 | Operator 类型名，用于工厂创建 |
+| `id` | string | 是 | 节点唯一标识 |
+| `name` | string | 是 | Core 类型名，用于工厂创建 |
 | `params` | object | 否 | 初始化参数 |
-| `capabilities` | array | 否 | operator 级 capability 列表 |
-| `depends_on` | array | 否 | 依赖的 operator id |
+| `capabilities` | array | 否 | 节点级 capability 列表，会和 `global.capabilities` 合并后安装到当前 stage |
+| `depends_on` | array | 否 | 依赖的上游节点 id |
 | `parallel` | bool | 否 | 预留标记，当前调度未直接消费 |
 | `error_handling` | object | 否 | 错误处理策略 |
 
@@ -181,9 +222,9 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
 | `pipelines[].input/output` | 已解析，但数据路由能力有限 |
 | `ops[].parallel` | 已解析，但不直接驱动并发 |
 
-## Operator 名称约束
+## Core 名称约束
 
-当前注册表里可直接使用的 operator 名称是：
+当前注册表里可直接使用的 core 名称是：
 
 - `SileroVad`
 - `KaldiFbank`
@@ -192,3 +233,37 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
 - `AsrWhisper`
 
 如果配置里写了别的名字，会在 stage build 阶段报 `Unknown operator type`。
+
+## Capability 配置约定
+
+当前 capability 项推荐写成下面的结构：
+
+```json
+{
+  "name": "StatusCapability",
+  "params": {
+    "phase": "pre",
+    "status": "before feature stage"
+  }
+}
+```
+
+其中：
+
+- `name`
+  - capability 注册名
+- `params.phase`
+  - 可选，当前支持 `pre` / `post`
+- 其他字段
+  - 由具体 capability 自己解释
+
+当前主线已接入 capability 执行链，但内置 capability 仍然比较少；如果需要扩展，优先把“按配置启停”的逻辑做成 capability，而不是再新增一类 aspect。
+
+当前内置 capability：
+
+- `AlertCapability`
+  - 通过 `emit_alert` 发出一条告警
+- `StatusCapability`
+  - 通过 `emit_status` 发出一条状态消息
+- `LogCapability`
+  - 记录一条配置化日志

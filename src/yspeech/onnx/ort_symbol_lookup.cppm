@@ -9,7 +9,7 @@ module;
 #include <windows.h>
 #endif
 
-export module yspeech.op.ort_symbol_lookup;
+export module yspeech.onnx.ort_symbol_lookup;
 
 export namespace yspeech::ort_detail {
 
@@ -17,7 +17,6 @@ inline auto lookup_symbol(const char* symbol_name) noexcept -> void* {
 #if defined(__APPLE__) || defined(__linux__) || defined(__unix__)
     return dlsym(RTLD_DEFAULT, symbol_name);
 #elif defined(_WIN32)
-    // Try current module first, then common ONNX Runtime DLL names.
     const HMODULE modules[] = {
         GetModuleHandleA(nullptr),
         GetModuleHandleA("onnxruntime.dll"),

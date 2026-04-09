@@ -53,8 +53,17 @@ public:
             nlohmann::json timings_json = nlohmann::json::array();
             for (const auto& [id, timing] : stats.operator_timings) {
                 nlohmann::json t;
+                const double task_time_percent =
+                    stats.total_processing_time_ms > 0.0
+                        ? ((timing.active_wall_time_ms > 0.0
+                                ? timing.active_wall_time_ms
+                                : std::min(timing.total_time_ms, stats.total_processing_time_ms))
+                           / stats.total_processing_time_ms * 100.0)
+                        : 0.0;
                 t["op_id"] = timing.op_id;
                 t["total_time_ms"] = timing.total_time_ms;
+                t["active_wall_time_ms"] = timing.active_wall_time_ms;
+                t["task_time_percent"] = task_time_percent;
                 t["min_time_ms"] = timing.min_time_ms == std::numeric_limits<double>::max() ? 0.0 : timing.min_time_ms;
                 t["max_time_ms"] = timing.max_time_ms;
                 t["avg_time_ms"] = timing.avg_time_ms;
@@ -116,10 +125,19 @@ public:
         oss << "avg_cpu_percent," << std::fixed << std::setprecision(1) << stats.avg_cpu_percent << "\n";
         
         if (!stats.operator_timings.empty()) {
-            oss << "\noperator_id,total_time_ms,avg_time_ms,min_time_ms,max_time_ms,call_count,effective_call_count,effective_avg_time_ms,p50_ms,p95_ms,p99_ms\n";
+            oss << "\noperator_id,total_time_ms,active_wall_time_ms,task_time_percent,avg_time_ms,min_time_ms,max_time_ms,call_count,effective_call_count,effective_avg_time_ms,p50_ms,p95_ms,p99_ms\n";
             for (const auto& [id, timing] : stats.operator_timings) {
+                const double task_time_percent =
+                    stats.total_processing_time_ms > 0.0
+                        ? ((timing.active_wall_time_ms > 0.0
+                                ? timing.active_wall_time_ms
+                                : std::min(timing.total_time_ms, stats.total_processing_time_ms))
+                           / stats.total_processing_time_ms * 100.0)
+                        : 0.0;
                 oss << timing.op_id << ","
                     << std::fixed << std::setprecision(2) << timing.total_time_ms << ","
+                    << std::fixed << std::setprecision(2) << timing.active_wall_time_ms << ","
+                    << std::fixed << std::setprecision(2) << task_time_percent << ","
                     << std::fixed << std::setprecision(2) << timing.avg_time_ms << ","
                     << std::fixed << std::setprecision(2) << (timing.min_time_ms == std::numeric_limits<double>::max() ? 0.0 : timing.min_time_ms) << ","
                     << std::fixed << std::setprecision(2) << timing.max_time_ms << ","

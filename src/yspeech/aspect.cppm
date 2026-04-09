@@ -3,14 +3,14 @@ module;
 export module yspeech.aspect;
 
 import std;
-import yspeech.context;
+import yspeech.runtime.runtime_context;
 
 namespace yspeech {
 
 export template <typename T>
-concept Aspect = requires(T t, Context& ctx, const std::string& op_name, std::any payload) {
-    { t.before(ctx, op_name) } -> std::same_as<std::any>;
-    { t.after(ctx, op_name, payload) } -> std::same_as<void>;
+concept Aspect = requires(T t, RuntimeContext& runtime, const std::string& component_name, std::any payload) {
+    { t.before(runtime, component_name) } -> std::same_as<std::any>;
+    { t.after(runtime, component_name, payload) } -> std::same_as<void>;
 };
 
 export class AspectIface {
@@ -31,12 +31,12 @@ public:
     AspectIface(AspectIface&&) noexcept = default;
     AspectIface& operator=(AspectIface&&) noexcept = default;
 
-    auto before(Context& ctx, const std::string& op_name) -> std::any {
-        return self_->before(ctx, op_name);
+    auto before(RuntimeContext& runtime, const std::string& component_name) -> std::any {
+        return self_->before(runtime, component_name);
     }
 
-    auto after(Context& ctx, const std::string& op_name, std::any payload) -> void {
-        self_->after(ctx, op_name, std::move(payload));
+    auto after(RuntimeContext& runtime, const std::string& component_name, std::any payload) -> void {
+        self_->after(runtime, component_name, std::move(payload));
     }
 
     template <typename T>
@@ -49,8 +49,8 @@ public:
 
     struct Concept {
         virtual ~Concept() = default;
-        virtual auto before(Context& ctx, const std::string& op_name) -> std::any = 0;
-        virtual auto after(Context& ctx, const std::string& op_name, std::any payload) -> void = 0;
+        virtual auto before(RuntimeContext& runtime, const std::string& component_name) -> std::any = 0;
+        virtual auto after(RuntimeContext& runtime, const std::string& component_name, std::any payload) -> void = 0;
         virtual auto type() const -> const std::type_info& = 0;
         virtual auto clone() const -> std::unique_ptr<Concept> = 0;
     };
@@ -60,12 +60,12 @@ public:
         Model(const T& aspect): aspect_(aspect) {}
         Model(T&& aspect): aspect_(std::move(aspect)) {}
 
-        auto before(Context& ctx, const std::string& op_name) -> std::any override {
-            return aspect_.before(ctx, op_name);
+        auto before(RuntimeContext& runtime, const std::string& component_name) -> std::any override {
+            return aspect_.before(runtime, component_name);
         }
 
-        auto after(Context& ctx, const std::string& op_name, std::any payload) -> void override {
-            aspect_.after(ctx, op_name, std::move(payload));
+        auto after(RuntimeContext& runtime, const std::string& component_name, std::any payload) -> void override {
+            aspect_.after(runtime, component_name, std::move(payload));
         }
 
         auto type() const -> const std::type_info& override {

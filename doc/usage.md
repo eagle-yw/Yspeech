@@ -33,7 +33,34 @@ cmake --build build
 ./build/examples/streaming_demo \
   examples/configs/streaming_paraformer_asr.json \
   model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
-  1.0
+  0.0
+```
+
+### 流式识别 + capability 示例
+
+```bash
+./build/examples/streaming_demo \
+  examples/configs/streaming_paraformer_asr_capabilities.json \
+  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  0.0
+```
+
+### Taskflow 静态 DAG 示例
+
+```bash
+./build/examples/streaming_demo \
+  examples/configs/streaming_paraformer_asr_dag.json \
+  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  0.0
+```
+
+### Taskflow 静态 DAG + timeout 示例
+
+```bash
+./build/examples/streaming_demo \
+  examples/configs/streaming_paraformer_asr_dag_timeout.json \
+  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  0.0
 ```
 
 ### 命令行转录工具
@@ -163,6 +190,16 @@ EngineConfigOptions > 配置文件同名字段
 - 面向流式观察和 benchmark
 - 支持 `--queue`、`--benchmark`、`--ep`、`--ane-only`
 - 会打印 `ProcessingStats`
+- 性能表里看总耗时贡献时，优先看 `Operator Performance` 的 `% Task`，不是直接用 `Total / Processing Time`
+- 启动时会根据配置文件识别运行画像，并给出一致的模式提示
+
+行为约定：
+
+- `mode=streaming` 且带 ASR core 配置：允许运行
+- 无 `pipelines[].depends_on`：按单线流式 ASR 主线处理
+- 声明了 `pipelines[].depends_on`：按静态 DAG 路径处理
+- `task=vad` 且只有 `SileroVad`：按 VAD-only 处理，只输出 VAD 事件
+- `mode=offline`：直接报错，提示改用 `simple_transcribe` 或 `transcribe_tool`
 
 ### `transcribe_tool`
 
@@ -177,7 +214,43 @@ EngineConfigOptions > 配置文件同名字段
 - `examples/configs/offline_paraformer_asr.json`
 - `examples/configs/offline_sensevoice_asr.json`
 - `examples/configs/streaming_paraformer_asr.json`
+- `examples/configs/streaming_paraformer_asr_capabilities.json`
 - `examples/configs/streaming_sensevoice_asr.json`
+- `examples/configs/streaming_paraformer_asr_dag.json`
+- `examples/configs/streaming_paraformer_asr_dag_timeout.json`
+
+其中默认推荐主线是：
+
+- `examples/configs/streaming_paraformer_asr.json`
+
+### 流式运行时
+
+流式配置默认就走 Taskflow 运行时。`runtime` 段现在主要用于调优参数，例如：
+
+```json
+{
+  "runtime": {
+    "pipeline_lines": 2
+  }
+}
+```
+
+说明：
+
+- `pipeline_lines` 控制 Taskflow pipeline line 数
+- 纯线性配置会走单个 `PipelineExecutor`
+- 声明了 `pipelines[].depends_on` 的 DAG 配置会走 `RuntimeDagExecutor`
+- 当前已经支持 `Branch + Join + join_timeout_ms`
+
+### 静态 DAG 配置要点
+
+- `pipelines[].depends_on` 用来声明 stage 级依赖边
+- 多个上游指向同一 stage 时，该 stage 会被识别为 `Join`
+- `pipelines[].join_policy` 当前支持：
+  - `all_of`
+  - `any_of`
+- `pipelines[].join_timeout_ms` 用于轻量超时放行
+- 线性段仍交给 `tf::Pipeline` 执行，仓库自身只补 branch/join 语义
 
 需要额外注意的配置：
 

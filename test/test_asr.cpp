@@ -5,33 +5,17 @@
 #include <cmath>
 
 import std;
-import yspeech.context;
 import yspeech.types;
-import yspeech.stream_store;
-import yspeech.op;
-import yspeech.op.asr.base;
-import yspeech.op.asr.paraformer;
-import yspeech.op.asr.whisper;
-import yspeech.op.asr.sensevoice;
-import yspeech.op.feature.kaldi_fbank;
+import yspeech.domain.asr.base;
+import yspeech.domain.asr.paraformer;
+import yspeech.domain.asr.whisper;
+import yspeech.domain.asr.sensevoice;
+import yspeech.domain.feature.base;
+import yspeech.domain.feature.kaldi_fbank;
 
 using namespace yspeech;
 
 namespace {
-
-AudioFramePtr make_test_frame(const std::vector<float>& samples, std::uint64_t seq, bool eos = false) {
-    static AudioFramePool pool;
-    auto frame = pool.acquire(samples.size());
-    frame->stream_id = "test";
-    frame->seq = seq;
-    frame->sample_rate = 16000;
-    frame->channels = 1;
-    frame->pts_ms = static_cast<std::int64_t>(seq * 10);
-    frame->dur_ms = 10;
-    frame->eos = eos;
-    frame->samples = samples;
-    return frame;
-}
 
 std::vector<float> make_sine(std::size_t samples, float freq = 440.0f) {
     std::vector<float> audio(samples);
@@ -40,18 +24,6 @@ std::vector<float> make_sine(std::size_t samples, float freq = 440.0f) {
                             static_cast<float>(i) / 16000.0f) * 0.5f;
     }
     return audio;
-}
-
-void push_audio_frames(StreamStore& store, const std::vector<float>& audio, std::string key = "audio_frames") {
-    constexpr std::size_t frame_samples = 160;
-    std::uint64_t seq = 0;
-    for (std::size_t offset = 0; offset < audio.size(); offset += frame_samples, ++seq) {
-        const auto end = std::min(offset + frame_samples, audio.size());
-        std::vector<float> frame_samples_buffer(audio.begin() + static_cast<std::ptrdiff_t>(offset),
-                                                audio.begin() + static_cast<std::ptrdiff_t>(end));
-        const bool eos = end == audio.size();
-        store.push_frame(key, make_test_frame(frame_samples_buffer, seq, eos));
-    }
 }
 
 bool paraformer_model_exists() {
@@ -70,6 +42,19 @@ bool sensevoice_model_exists() {
     std::ifstream model("model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx");
     std::ifstream tokens("model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt");
     return model.good() && tokens.good();
+}
+
+auto create_fbank_core(const nlohmann::json& extra = {}) -> std::unique_ptr<FeatureCoreIface> {
+    auto extractor = FeatureCoreFactory::get_instance().create_core("KaldiFbank");
+    nlohmann::json config = {
+        {"sample_rate", 16000},
+        {"num_bins", 80}
+    };
+    for (const auto& [key, value] : extra.items()) {
+        config[key] = value;
+    }
+    extractor->init(config);
+    return extractor;
 }
 
 }
@@ -99,61 +84,29 @@ TEST(TestAsrBase, WordInfoStructure) {
 }
 
 TEST(TestFeatureExtract, BasicInit) {
-    OpKaldiFbank extractor;
+    auto extractor = create_fbank_core();
     nlohmann::json config = {
-        {"num_bins", 80},
-        {"sample_rate", 16000},
-        {"input_frame_key", "audio_frames"},
-        {"output_key", "fbank"}
-    };
-    EXPECT_NO_THROW(extractor.init(config));
-}
-
-TEST(TestFeatureExtract, ProcessAudioStream) {
-    OpKaldiFbank extractor;
-    nlohmann::json config = {
-        {"input_frame_key", "audio_frames"},
-        {"output_key", "fbank"},
         {"num_bins", 80},
         {"sample_rate", 16000}
     };
-    extractor.init(config);
+    EXPECT_NO_THROW(extractor->deinit());
+}
 
-    Context ctx;
-    StreamStore store;
-    store.init_audio_ring("audio_frames", 2048);
-    push_audio_frames(store, make_sine(16000));
-
-    ASSERT_TRUE(extractor.ready(ctx, store));
-    auto result = extractor.process_stream(ctx, store);
-    EXPECT_NE(result.status, StreamProcessStatus::NeedMoreInput);
-    EXPECT_TRUE(ctx.contains("fbank_num_frames"));
-    EXPECT_GT(ctx.get<int>("fbank_num_frames"), 0);
-
-    auto flush_result = extractor.flush(ctx, store);
-    EXPECT_TRUE(flush_result.status == StreamProcessStatus::NoOp ||
-                flush_result.status == StreamProcessStatus::StreamFinalized);
+TEST(TestFeatureExtract, ProcessAudioStream) {
+    auto extractor = create_fbank_core();
+    auto result = extractor->process_samples(make_sine(16000), true);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_GT(result->num_frames, 0);
+    extractor->deinit();
 }
 
 TEST(TestFeatureExtract, KaldiFbankFeatureDim) {
-    OpKaldiFbank extractor;
-    nlohmann::json config = {
-        {"num_bins", 80},
-        {"sample_rate", 16000},
-        {"input_frame_key", "audio_frames"},
-        {"output_key", "fbank"}
-    };
-    extractor.init(config);
-
-    Context ctx;
-    StreamStore store;
-    store.init_audio_ring("audio_frames", 4096);
-    push_audio_frames(store, make_sine(32000));
-
-    extractor.process_stream(ctx, store);
-    auto features = ctx.get<std::vector<std::vector<float>>>("fbank_features");
-    ASSERT_FALSE(features.empty());
-    EXPECT_EQ(features.front().size(), 80);
+    auto extractor = create_fbank_core();
+    auto result = extractor->process_samples(make_sine(32000), true);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_FALSE(result->features.empty());
+    EXPECT_EQ(result->features.front().size(), 80);
+    extractor->deinit();
 }
 
 TEST(TestAsrParaformer, BasicInit) {
@@ -161,13 +114,14 @@ TEST(TestAsrParaformer, BasicInit) {
         GTEST_SKIP() << "ParaFormer model files not found";
     }
 
-    OpAsrParaformer asr;
+    auto asr = AsrCoreFactory::get_instance().create_core("AsrParaformer");
     nlohmann::json config = {
         {"model_path", "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx"},
         {"tokens_path", "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt"},
         {"language", "zh"}
     };
-    EXPECT_NO_THROW(asr.init(config));
+    EXPECT_NO_THROW(asr->init(config));
+    asr->deinit();
 }
 
 TEST(TestAsrParaformer, EmptyFeaturesNeedMoreInput) {
@@ -175,20 +129,16 @@ TEST(TestAsrParaformer, EmptyFeaturesNeedMoreInput) {
         GTEST_SKIP() << "ParaFormer model files not found";
     }
 
-    OpAsrParaformer asr;
+    auto asr = AsrCoreFactory::get_instance().create_core("AsrParaformer");
     nlohmann::json config = {
         {"model_path", "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx"},
         {"tokens_path", "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt"},
-        {"feature_input_key", "fbank"},
-        {"output_key", "asr"}
+        {"language", "zh"}
     };
-    asr.init(config);
-
-    Context ctx;
-    StreamStore store;
-    auto result = asr.process_stream(ctx, store);
-    EXPECT_EQ(result.status, StreamProcessStatus::NoOp);
-    EXPECT_FALSE(ctx.contains("asr_text"));
+    asr->init(config);
+    auto result = asr->infer({});
+    EXPECT_TRUE(result.text.empty());
+    asr->deinit();
 }
 
 TEST(TestAsrWhisper, BasicInit) {
@@ -196,7 +146,7 @@ TEST(TestAsrWhisper, BasicInit) {
         GTEST_SKIP() << "Whisper model files not found";
     }
 
-    OpAsrWhisper asr;
+    auto asr = AsrCoreFactory::get_instance().create_core("AsrWhisper");
     nlohmann::json config = {
         {"encoder_path", "test_data/whisper_encoder.onnx"},
         {"decoder_path", "test_data/whisper_decoder.onnx"},
@@ -204,7 +154,8 @@ TEST(TestAsrWhisper, BasicInit) {
         {"language", "zh"},
         {"task", "transcribe"}
     };
-    EXPECT_NO_THROW(asr.init(config));
+    EXPECT_NO_THROW(asr->init(config));
+    asr->deinit();
 }
 
 TEST(TestAsrSenseVoice, BasicInit) {
@@ -212,11 +163,12 @@ TEST(TestAsrSenseVoice, BasicInit) {
         GTEST_SKIP() << "SenseVoice model files not found";
     }
 
-    OpAsrSenseVoice asr;
+    auto asr = AsrCoreFactory::get_instance().create_core("AsrSenseVoice");
     nlohmann::json config = {
         {"model_path", "model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx"},
         {"tokens_path", "model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt"},
         {"language", "zh"}
     };
-    EXPECT_NO_THROW(asr.init(config));
+    EXPECT_NO_THROW(asr->init(config));
+    asr->deinit();
 }

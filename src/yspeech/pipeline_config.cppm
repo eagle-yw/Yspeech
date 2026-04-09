@@ -153,6 +153,43 @@ inline ConfigValidationResult validate_stage(const nlohmann::json& stage, size_t
         result.valid = false;
         result.errors.push_back(prefix + "field 'max_concurrency' must be an integer");
     }
+
+    if (stage.contains("depends_on") && !stage["depends_on"].is_array()) {
+        result.valid = false;
+        result.errors.push_back(prefix + "field 'depends_on' must be an array");
+    } else if (stage.contains("depends_on")) {
+        for (size_t dep_index = 0; dep_index < stage["depends_on"].size(); ++dep_index) {
+            if (!stage["depends_on"][dep_index].is_string()) {
+                result.valid = false;
+                result.errors.push_back(
+                    prefix + "field 'depends_on[" + std::to_string(dep_index) + "]' must be a string"
+                );
+            }
+        }
+    }
+
+    if (stage.contains("join_policy")) {
+        if (!stage["join_policy"].is_string()) {
+            result.valid = false;
+            result.errors.push_back(prefix + "field 'join_policy' must be a string");
+        } else {
+            const auto policy = stage["join_policy"].get<std::string>();
+            if (policy != "all_of" && policy != "any_of") {
+                result.valid = false;
+                result.errors.push_back(prefix + "field 'join_policy' must be 'all_of' or 'any_of'");
+            }
+        }
+    }
+
+    if (stage.contains("join_timeout_ms")) {
+        if (!stage["join_timeout_ms"].is_number_integer()) {
+            result.valid = false;
+            result.errors.push_back(prefix + "field 'join_timeout_ms' must be an integer");
+        } else if (stage["join_timeout_ms"].get<std::int64_t>() < 0) {
+            result.valid = false;
+            result.errors.push_back(prefix + "field 'join_timeout_ms' must be >= 0");
+        }
+    }
     
     if (stage.contains("input")) {
         if (!stage["input"].is_object()) {
@@ -208,6 +245,94 @@ inline ConfigValidationResult validate_config(const nlohmann::json& config) {
                 result.errors.insert(result.errors.end(), stage_result.errors.begin(), stage_result.errors.end());
             }
             result.warnings.insert(result.warnings.end(), stage_result.warnings.begin(), stage_result.warnings.end());
+        }
+
+        std::unordered_map<std::string, std::size_t> stage_index;
+        std::unordered_map<std::string, std::vector<std::string>> graph;
+        for (size_t i = 0; i < config["pipelines"].size(); ++i) {
+            const auto& stage = config["pipelines"][i];
+            if (!stage.contains("id") || !stage["id"].is_string()) {
+                continue;
+            }
+
+            const auto stage_id = stage["id"].get<std::string>();
+            if (!stage_index.emplace(stage_id, i).second) {
+                result.valid = false;
+                result.errors.push_back("Duplicate stage id: " + stage_id);
+            }
+
+            if (stage.contains("depends_on") && stage["depends_on"].is_array()) {
+                auto& deps = graph[stage_id];
+                for (const auto& dep : stage["depends_on"]) {
+                    if (dep.is_string()) {
+                        deps.push_back(dep.get<std::string>());
+                    }
+                }
+            } else {
+                graph.try_emplace(stage_id);
+            }
+        }
+
+        for (const auto& [stage_id, deps] : graph) {
+            for (const auto& dep_id : deps) {
+                if (!stage_index.contains(dep_id)) {
+                    result.valid = false;
+                    result.errors.push_back(
+                        "Stage '" + stage_id + "' depends on unknown stage '" + dep_id + "'"
+                    );
+                }
+            }
+        }
+
+        for (const auto& stage : config["pipelines"]) {
+            if (!stage.contains("id") || !stage["id"].is_string()) {
+                continue;
+            }
+            const auto stage_id = stage["id"].get<std::string>();
+            const auto indegree = graph.contains(stage_id) ? graph.at(stage_id).size() : std::size_t{0};
+            if (stage.contains("join_policy") && indegree <= 1) {
+                result.valid = false;
+                result.errors.push_back(
+                    "Stage '" + stage_id + "' uses 'join_policy' but is not a join node"
+                );
+            }
+            if (stage.contains("join_timeout_ms") && indegree <= 1) {
+                result.valid = false;
+                result.errors.push_back(
+                    "Stage '" + stage_id + "' uses 'join_timeout_ms' but is not a join node"
+                );
+            }
+        }
+
+        enum class VisitState { Unvisited, Visiting, Visited };
+        std::unordered_map<std::string, VisitState> visit_state;
+        std::function<bool(const std::string&)> has_cycle = [&](const std::string& stage_id) -> bool {
+            auto state = visit_state[stage_id];
+            if (state == VisitState::Visiting) {
+                return true;
+            }
+            if (state == VisitState::Visited) {
+                return false;
+            }
+
+            visit_state[stage_id] = VisitState::Visiting;
+            if (auto it = graph.find(stage_id); it != graph.end()) {
+                for (const auto& dep_id : it->second) {
+                    if (stage_index.contains(dep_id) && has_cycle(dep_id)) {
+                        return true;
+                    }
+                }
+            }
+            visit_state[stage_id] = VisitState::Visited;
+            return false;
+        };
+
+        for (const auto& [stage_id, _] : graph) {
+            if (has_cycle(stage_id)) {
+                result.valid = false;
+                result.errors.push_back("Stage dependency graph contains a cycle");
+                break;
+            }
         }
     } else {
         result.valid = false;

@@ -30,6 +30,88 @@
 
 它会输出单次 summary 或 benchmark 汇总表。
 
+## `Performance Summary` 的口径
+
+`streaming_demo` 当前会输出两层性能信息：
+
+1. 总览表 `Performance Summary`
+2. 明细表 `Operator Performance`
+
+当前主统计链路：
+
+- `Performance Summary`
+- `Operator Performance`
+- `ProcessingStats`
+
+都以 `Aspect` 为主来源，默认由 `TimerAspect` 在 `Stage -> Core` 边界统一采集。
+
+`Capability` 不负责定义默认性能统计口径。运行时治理如果需要告警，优先复用引擎层已有告警链，而不是再让 capability 参与默认 Performance 统计。
+
+### 总览表
+
+这里最容易混淆的是这 4 个字段：
+
+| 字段 | 含义 |
+|------|------|
+| `Processing Time` | 整次任务的 wall time，作为总分母 |
+| `Operator Time` | 所有 operator 调用耗时的累计值 |
+| `Non-Operator Time` | 总 wall time 中不属于 operator 活跃区间的部分 |
+| `Operator Share` | operator 对整次任务 wall time 的总体占比 |
+
+注意：
+
+- `Operator Time` 是累计值，在并发场景下可能大于 `Processing Time`
+- 因此判断“这次任务主要花在哪”时，不要直接拿单个 operator 的 `Total` 去除 `Processing Time`
+
+### 明细表
+
+`Operator Performance` 里的字段含义是：
+
+| 字段 | 含义 |
+|------|------|
+| `Total` | 该 operator 的累计执行时间 |
+| `Avg` | 单次平均执行时间 |
+| `Calls` | 被调用次数 |
+| `Exec` | 有效执行次数 |
+| `% Task` | 该 operator 在整次任务 wall time 中的活跃占比 |
+
+这里的 `% Task` 才是“看它在任务执行总耗时里占多少”的列。
+
+理解时建议这样看：
+
+- 看 `Operator Share`：先判断任务总体是不是主要耗在 operator 上
+- 再看各 operator 的 `% Task`：判断哪个 operator 是主热点
+- 再配合 `Total / Avg / Calls`：判断是“单次慢”还是“调用太多”
+
+### 为什么 `% Task` 不一定加起来正好 100%
+
+这是正常的，因为整次任务 wall time 里还可能包含：
+
+- 非 operator 的处理
+- 线程切换与排队
+- 无算子活跃的等待区间
+
+因此：
+
+- `Operator Share` 反映 operator 整体占比
+- 每个 operator 的 `% Task` 反映各自对总任务时间的贡献
+- 它们加起来不要求正好等于 `100%`
+
+## 导出字段口径
+
+`PerformanceExporter` 导出的 JSON / CSV 现在和终端表格保持一致：
+
+- `total_processing_time_ms`
+  - 对应 `Processing Time`
+- `operator_time_percent`
+  - 对应总览表里的 `Operator Share`
+- `operator_timings[].total_time_ms`
+  - operator 累计执行时间
+- `operator_timings[].active_wall_time_ms`
+  - operator 在任务中的活跃 wall time
+- `operator_timings[].task_time_percent`
+  - 对应终端 `Operator Performance` 里的 `% Task`
+
 ## 调优重点
 
 ### 1. `max_concurrency`

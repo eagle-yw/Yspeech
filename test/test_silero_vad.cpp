@@ -5,11 +5,8 @@
 #include <cmath>
 
 import std;
-import yspeech.context;
-import yspeech.stream_store;
-import yspeech.types;
-import yspeech.op;
-import yspeech.op.vad.silero;
+import yspeech.domain.vad.base;
+import yspeech.domain.vad.silero;
 
 using namespace yspeech;
 
@@ -20,20 +17,6 @@ bool model_exists() {
     return file.good();
 }
 
-AudioFramePtr make_frame(const std::vector<float>& samples, std::uint64_t seq, bool eos = false) {
-    static AudioFramePool pool;
-    auto frame = pool.acquire(samples.size());
-    frame->stream_id = "vad_test";
-    frame->seq = seq;
-    frame->sample_rate = 16000;
-    frame->channels = 1;
-    frame->pts_ms = static_cast<std::int64_t>(seq * 10);
-    frame->dur_ms = 10;
-    frame->eos = eos;
-    frame->samples = samples;
-    return frame;
-}
-
 std::vector<float> make_audio(std::size_t samples, float scale = 0.1f) {
     std::vector<float> audio(samples);
     for (std::size_t i = 0; i < samples; ++i) {
@@ -42,27 +25,14 @@ std::vector<float> make_audio(std::size_t samples, float scale = 0.1f) {
     return audio;
 }
 
-void push_frames(StreamStore& store, const std::vector<float>& audio) {
-    constexpr std::size_t frame_samples = 160;
-    std::uint64_t seq = 0;
-    for (std::size_t offset = 0; offset < audio.size(); offset += frame_samples, ++seq) {
-        auto end = std::min(offset + frame_samples, audio.size());
-        std::vector<float> frame_samples_buffer(audio.begin() + static_cast<std::ptrdiff_t>(offset),
-                                                audio.begin() + static_cast<std::ptrdiff_t>(end));
-        store.push_frame("audio_frames", make_frame(frame_samples_buffer, seq, end == audio.size()));
-    }
-}
-
-OpSileroVad create_vad(float threshold = 0.5f) {
-    OpSileroVad vad;
+auto create_vad(float threshold = 0.5f) -> std::unique_ptr<VadCoreIface> {
+    auto vad = VadCoreFactory::get_instance().create_core("SileroVad");
     nlohmann::json config = {
         {"model_path", "model/vad/silero_vad.onnx"},
         {"threshold", threshold},
-        {"sample_rate", 16000},
-        {"input_frame_key", "audio_frames"},
-        {"output_key", "vad"}
+        {"sample_rate", 16000}
     };
-    vad.init(config);
+    vad->init(config);
     return vad;
 }
 
@@ -81,13 +51,10 @@ TEST(TestSileroVad, ProcessEmptyStore) {
     }
 
     auto vad = create_vad();
-    Context ctx;
-    StreamStore store;
-    store.init_audio_ring("audio_frames", 64);
-
-    auto result = vad.process_stream(ctx, store);
-    EXPECT_EQ(result.status, StreamProcessStatus::NeedMoreInput);
-    EXPECT_FALSE(ctx.contains("vad_probability"));
+    auto result = vad->process_samples({}, false);
+    EXPECT_FLOAT_EQ(result.probability, 0.0f);
+    EXPECT_FALSE(result.is_speech);
+    EXPECT_TRUE(result.finished_segments.empty());
 }
 
 TEST(TestSileroVad, ProcessWithAudioData) {
@@ -96,23 +63,9 @@ TEST(TestSileroVad, ProcessWithAudioData) {
     }
 
     auto vad = create_vad(0.5f);
-    Context ctx;
-    StreamStore store;
-    store.init_audio_ring("audio_frames", 512);
-    push_frames(store, make_audio(5120));
-
-    while (vad.ready(ctx, store)) {
-        auto result = vad.process_stream(ctx, store);
-        if (result.status == StreamProcessStatus::NeedMoreInput) {
-            break;
-        }
-    }
-
-    if (ctx.contains("vad_probability")) {
-        float prob = ctx.get<float>("vad_probability");
-        EXPECT_GE(prob, 0.0f);
-        EXPECT_LE(prob, 1.0f);
-    }
+    auto result = vad->process_samples(make_audio(5120), true);
+    EXPECT_GE(result.probability, 0.0f);
+    EXPECT_LE(result.probability, 1.0f);
 }
 
 TEST(TestSileroVad, StateManagement) {
@@ -121,8 +74,7 @@ TEST(TestSileroVad, StateManagement) {
     }
 
     auto vad = create_vad();
-    EXPECT_FALSE(vad.is_speech());
-    EXPECT_FLOAT_EQ(vad.current_probability(), 0.0f);
+    EXPECT_FLOAT_EQ(vad->current_probability(), 0.0f);
 }
 
 TEST(TestSileroVad, Deinit) {
@@ -131,5 +83,5 @@ TEST(TestSileroVad, Deinit) {
     }
 
     auto vad = create_vad();
-    EXPECT_NO_THROW(vad.deinit());
+    EXPECT_NO_THROW(vad->deinit());
 }

@@ -2,11 +2,11 @@ module;
 
 #include <nlohmann/json.hpp>
 
-export module yspeech.op.asr.base;
+export module yspeech.domain.asr.base;
 
 import std;
 import yspeech.context;
-import yspeech.op;
+import yspeech.stream_process;
 import yspeech.log;
 import yspeech.stream_store;
 import yspeech.types;
@@ -98,6 +98,55 @@ protected:
     bool coreml_ane_only_ = false;
     std::uint32_t coreml_flags_ = 0;
     int num_threads_ = 4;
+};
+
+export class AsrCoreIface {
+public:
+    virtual ~AsrCoreIface() = default;
+    virtual void init(const nlohmann::json& config) = 0;
+    virtual auto infer(const std::vector<std::vector<float>>& features) -> AsrResult = 0;
+    virtual void deinit() = 0;
+};
+
+export class AsrCoreFactory {
+public:
+    using CreatorFunc = std::function<std::unique_ptr<AsrCoreIface>()>;
+
+    static AsrCoreFactory& get_instance() {
+        static AsrCoreFactory instance;
+        return instance;
+    }
+
+    void register_core(const std::string& name, CreatorFunc creator) {
+        if (registry_.contains(name)) {
+            throw std::runtime_error(std::format("ASR core type already registered: {}", name));
+        }
+        registry_[name] = std::move(creator);
+    }
+
+    auto create_core(const std::string& name) -> std::unique_ptr<AsrCoreIface> {
+        if (!registry_.contains(name)) {
+            throw std::runtime_error(std::format("Unknown ASR core type: {}", name));
+        }
+        return registry_[name]();
+    }
+
+    bool has_core(const std::string& name) const {
+        return registry_.contains(name);
+    }
+
+private:
+    AsrCoreFactory() = default;
+    std::unordered_map<std::string, CreatorFunc> registry_;
+};
+
+export template<typename T>
+struct AsrCoreRegistrar {
+    AsrCoreRegistrar(const std::string& name) {
+        AsrCoreFactory::get_instance().register_core(name, []() -> std::unique_ptr<AsrCoreIface> {
+            return std::make_unique<T>();
+        });
+    }
 };
 
 }

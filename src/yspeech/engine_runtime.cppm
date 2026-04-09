@@ -5,19 +5,61 @@ module;
 export module yspeech.engine_runtime;
 
 import std;
-import yspeech.runtime_common;
+import yspeech.runtime.common;
 import yspeech.context;
 import yspeech.frame_source;
 import yspeech.pipeline_config;
-import yspeech.pipeline_manager;
+import yspeech.runtime.pipeline_builder;
+import yspeech.runtime.runtime_dag;
+import yspeech.runtime.runtime_dag_executor;
+import yspeech.runtime.pipeline_executor;
+import yspeech.runtime.pipeline_recipe;
+import yspeech.runtime.segment_registry;
+import yspeech.runtime.runtime_context;
+import yspeech.runtime.token;
+import yspeech.runtime.event_stage;
+import yspeech.domain.vad.stage;
+import yspeech.domain.feature.stage;
+import yspeech.domain.asr.stage;
 import yspeech.stream_store;
 import yspeech.types;
 import yspeech.log;
 import yspeech.performance_alert;
 import yspeech.resource_monitor;
-import yspeech.operators;
 
 namespace yspeech {
+
+namespace {
+
+auto build_stage_capabilities(
+    const PipelineConfig& pipeline_config,
+    const OperatorConfig& op_config
+) -> nlohmann::json {
+    nlohmann::json merged = nlohmann::json::array();
+
+    const auto append_capabilities = [&](const nlohmann::json& capabilities) {
+        if (!capabilities.is_array()) {
+            return;
+        }
+        for (const auto& entry : capabilities) {
+            if (!entry.is_object() || !entry.contains("name") || !entry["name"].is_string()) {
+                continue;
+            }
+            auto normalized = entry;
+            if (!normalized.contains("params") || !normalized["params"].is_object()) {
+                normalized["params"] = nlohmann::json::object();
+            }
+            normalized["params"] = pipeline_config.resolve_capability_params(normalized["params"]);
+            merged.push_back(std::move(normalized));
+        }
+    };
+
+    append_capabilities(pipeline_config.capabilities());
+    append_capabilities(op_config.capabilities);
+    return merged;
+}
+
+}
 
 export class EngineRuntime {
 public:
@@ -62,11 +104,19 @@ private:
     PipelineConfig pipeline_config_;
     FrameConfig frame_config_;
     std::unique_ptr<StreamStore> stream_store_;
-    std::unique_ptr<PipelineManager> pipeline_manager_;
     std::unique_ptr<Context> context_;
     std::shared_ptr<MicSource> default_frame_source_;
     std::shared_ptr<IFrameSource> active_frame_source_;
     bool offline_mode_ = false;
+    std::optional<RuntimeContext> pipeline_runtime_context_;
+    std::optional<SegmentRegistry> segment_registry_;
+    std::unique_ptr<PipelineExecutor> pipeline_executor_;
+    std::unique_ptr<RuntimeDagExecutor> runtime_dag_executor_;
+    std::optional<VadStage> vad_stage_;
+    std::optional<FeatureStage> feature_stage_;
+    std::optional<AsrStage> asr_stage_;
+    std::optional<EventStage> event_stage_;
+    std::atomic<std::uint64_t> next_pipeline_token_id_{1};
 
     std::atomic<bool> running_{false};
     ProcessingStats stats_;
@@ -78,12 +128,14 @@ private:
     std::chrono::steady_clock::time_point first_token_time_{};
     std::chrono::steady_clock::time_point input_eof_time_{};
     std::chrono::steady_clock::time_point input_eof_status_time_{};
+    std::chrono::steady_clock::time_point stream_drained_time_{};
     std::atomic<bool> first_chunk_seen_{false};
     std::atomic<bool> first_partial_seen_{false};
     std::atomic<bool> first_final_seen_{false};
     std::atomic<bool> first_token_seen_{false};
     std::atomic<bool> input_eof_seen_{false};
     std::atomic<bool> input_eof_status_seen_{false};
+    std::atomic<bool> stream_drained_seen_{false};
     double engine_init_time_ms_ = 0.0;
     double stop_resource_monitor_ms_ = 0.0;
     double stop_source_join_ms_ = 0.0;
@@ -130,6 +182,7 @@ private:
     void emit_stream_drained_once();
     ProcessingStats build_live_stats_snapshot() const;
     void finalize_stream_if_needed();
+    void await_pipeline_drain_if_needed();
 };
 
 EngineRuntime::EngineRuntime(const std::string& config_path)
@@ -170,12 +223,14 @@ void EngineRuntime::start() {
     first_token_seen_.store(false, std::memory_order_release);
     input_eof_seen_.store(false, std::memory_order_release);
     input_eof_status_seen_.store(false, std::memory_order_release);
+    stream_drained_seen_.store(false, std::memory_order_release);
     first_chunk_time_ = {};
     first_partial_time_ = {};
     first_final_time_ = {};
     first_token_time_ = {};
     input_eof_time_ = {};
     input_eof_status_time_ = {};
+    stream_drained_time_ = {};
     stop_resource_monitor_ms_ = 0.0;
     stop_source_join_ms_ = 0.0;
     stop_finalize_stream_ms_ = 0.0;
@@ -183,8 +238,18 @@ void EngineRuntime::start() {
     stop_event_join_ms_ = 0.0;
     stream_drained_emitted_.store(false, std::memory_order_release);
 
+    if (pipeline_runtime_context_.has_value()) {
+        pipeline_runtime_context_->run_start_time = stats_start_time_;
+    }
+
     context_->set("streaming", !offline_mode_);
     emit_status("started");
+
+    if (runtime_dag_executor_) {
+        runtime_dag_executor_->start();
+    } else if (pipeline_executor_) {
+        pipeline_executor_->start();
+    }
 
     ResourceMonitor::start_monitoring(100);
 
@@ -235,9 +300,10 @@ void EngineRuntime::start() {
                     emit_status("input_eof");
                     signal_event_work();
                 }
-                store_frame(frame);
+                ingest_frame(frame);
                 if (frame->eos) {
                     finalize_stream_if_needed();
+                    await_pipeline_drain_if_needed();
                     drain_asr_events();
                     drain_vad_events();
                     emit_stream_drained_once();
@@ -258,6 +324,7 @@ void EngineRuntime::start() {
                 emit_status("input_eof");
                 signal_event_work();
                 finalize_stream_if_needed();
+                await_pipeline_drain_if_needed();
                 drain_asr_events();
                 drain_vad_events();
                 emit_stream_drained_once();
@@ -271,6 +338,7 @@ void EngineRuntime::start() {
             }
             ingest_frame(frame);
             if (frame->eos) {
+                await_pipeline_drain_if_needed();
                 drain_asr_events();
                 drain_vad_events();
                 emit_stream_drained_once();
@@ -299,6 +367,7 @@ void EngineRuntime::finish() {
     if (using_default_source && source_thread_.joinable()) {
         source_thread_.join();
         finalize_stream_if_needed();
+        await_pipeline_drain_if_needed();
         drain_asr_events();
         drain_vad_events();
         emit_stream_drained_once();
@@ -332,6 +401,11 @@ void EngineRuntime::stop() {
 
     phase_start = std::chrono::steady_clock::now();
     finalize_stream_if_needed();
+    if (runtime_dag_executor_) {
+        runtime_dag_executor_->stop();
+    } else if (pipeline_executor_) {
+        pipeline_executor_->stop();
+    }
     stop_finalize_stream_ms_ = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - phase_start).count();
 
@@ -348,6 +422,17 @@ void EngineRuntime::stop() {
     }
     stop_event_join_ms_ = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - phase_start).count();
+
+    if (vad_stage_) {
+        vad_stage_->deinit();
+    }
+    if (feature_stage_) {
+        feature_stage_->deinit();
+    }
+    if (asr_stage_) {
+        asr_stage_->deinit();
+    }
+    event_stage_.reset();
 
     finalize_stats();
     if (performance_callback_) {
@@ -490,16 +575,140 @@ void EngineRuntime::load_config() {
 void EngineRuntime::init_components() {
     try {
         apply_runtime_log_level(config_);
-        auto runtime = build_runtime_components(config_);
-        pipeline_config_ = std::move(runtime.pipeline_config);
-        stream_store_ = std::move(runtime.stream_store);
-        pipeline_manager_ = std::move(runtime.pipeline_manager);
-        context_ = std::move(runtime.context);
+        pipeline_config_ = PipelineConfig::from_json(config_);
+        stream_store_ = std::make_unique<StreamStore>();
+        context_ = std::make_unique<Context>();
+
         frame_config_ = read_frame_config(config_);
         offline_mode_ = config_.contains("mode") && config_["mode"].is_string() &&
                         config_["mode"].get<std::string>() == "offline";
         if (config_.contains("task") && config_["task"].is_string()) {
             task_ = config_["task"].get<std::string>();
+        }
+
+        pipeline_runtime_context_.emplace();
+        pipeline_runtime_context_->config = config_;
+        pipeline_runtime_context_->task = task_;
+        pipeline_runtime_context_->stats = &stats_;
+        segment_registry_.emplace();
+
+        auto builder_config = make_pipeline_builder_config(pipeline_config_, config_);
+        const bool uses_runtime_dag =
+            std::ranges::any_of(builder_config.recipe.stages, [](const auto& stage) {
+                return !stage.depends_on.empty() || !stage.downstream_ids.empty();
+            });
+
+        pipeline_executor_.reset();
+        runtime_dag_executor_.reset();
+        if (uses_runtime_dag) {
+            runtime_dag_executor_ = std::make_unique<RuntimeDagExecutor>();
+            runtime_dag_executor_->configure(builder_config, *pipeline_runtime_context_, *segment_registry_);
+        } else {
+            pipeline_executor_ = std::make_unique<PipelineExecutor>();
+            pipeline_executor_->configure(builder_config, *pipeline_runtime_context_, *segment_registry_);
+        }
+
+        vad_stage_.emplace();
+        feature_stage_.emplace();
+        asr_stage_.emplace();
+        event_stage_.emplace();
+
+        for (const auto& cfg : pipeline_config_.stages()) {
+            if (const auto* stage = builder_config.recipe.stage_by_role(PipelineStageRole::Vad);
+                stage && cfg.id() == stage->stage_id && !cfg.ops().empty()) {
+                auto params = cfg.ops().front().params.is_null() ? nlohmann::json::object() : cfg.ops().front().params;
+                params["__op_id"] = cfg.ops().front().id;
+                params["core_name"] = cfg.ops().front().name;
+                params["capabilities"] = build_stage_capabilities(pipeline_config_, cfg.ops().front());
+                vad_stage_->init(params);
+                vad_stage_->bind_stats(&stats_);
+            }
+            if (const auto* stage = builder_config.recipe.stage_by_role(PipelineStageRole::Feature);
+                stage && cfg.id() == stage->stage_id && !cfg.ops().empty()) {
+                auto params = cfg.ops().front().params.is_null() ? nlohmann::json::object() : cfg.ops().front().params;
+                params["__op_id"] = cfg.ops().front().id;
+                params["core_name"] = cfg.ops().front().name;
+                params["capabilities"] = build_stage_capabilities(pipeline_config_, cfg.ops().front());
+                feature_stage_->init(params);
+                feature_stage_->bind_stats(&stats_);
+            }
+            if (const auto* stage = builder_config.recipe.stage_by_role(PipelineStageRole::Asr);
+                stage && cfg.id() == stage->stage_id && !cfg.ops().empty()) {
+                auto params = cfg.ops().front().params.is_null() ? nlohmann::json::object() : cfg.ops().front().params;
+                params["__op_id"] = cfg.ops().front().id;
+                params["__core_pool_size"] = builder_config.num_lines;
+                params["model_name"] = cfg.ops().front().name;
+                params["capabilities"] = build_stage_capabilities(pipeline_config_, cfg.ops().front());
+                asr_stage_->init(params);
+                asr_stage_->bind_stats(&stats_);
+            }
+        }
+
+        pipeline_runtime_context_->emit_event = [this](const EngineEvent& event) {
+            if (event.kind == EngineEventKind::VadEnd && event.vad_segment.has_value()) {
+                stats_.speech_segments_detected++;
+                if (vad_callback_) {
+                    vad_callback_(false, event.vad_segment->start_ms, event.vad_segment->end_ms);
+                }
+                return;
+            }
+            if (!event.asr.has_value()) {
+                return;
+            }
+            if (event.kind == EngineEventKind::ResultPartial) {
+                if (!first_partial_seen_.exchange(true, std::memory_order_acq_rel)) {
+                    first_partial_time_ = std::chrono::steady_clock::now();
+                }
+            } else if (!first_final_seen_.exchange(true, std::memory_order_acq_rel)) {
+                first_final_time_ = std::chrono::steady_clock::now();
+            }
+            if (!first_token_seen_.exchange(true, std::memory_order_acq_rel)) {
+                first_token_time_ = std::chrono::steady_clock::now();
+            }
+            stats_.asr_results_generated++;
+            if (asr_event_callback_) {
+                asr_event_callback_(AsrEvent{
+                    .kind = event.kind == EngineEventKind::ResultPartial
+                        ? AsrResultKind::Partial
+                        : event.kind == EngineEventKind::ResultStreamFinal
+                            ? AsrResultKind::StreamFinal
+                            : AsrResultKind::SegmentFinal,
+                    .result = *event.asr,
+                    .segment = event.vad_segment
+                });
+            }
+        };
+        auto vad_callback = [this](PipelineToken& token, RuntimeContext& runtime, SegmentRegistry& registry) {
+            if (vad_stage_) {
+                vad_stage_->process(token, runtime, registry);
+            }
+        };
+        auto feature_callback = [this](PipelineToken& token, RuntimeContext& runtime, SegmentRegistry& registry) {
+            if (feature_stage_) {
+                feature_stage_->process(token, runtime, registry);
+            }
+        };
+        auto asr_callback = [this](PipelineToken& token, RuntimeContext& runtime, SegmentRegistry& registry) {
+            if (asr_stage_) {
+                asr_stage_->process(token, runtime, registry);
+            }
+        };
+        auto event_callback = [this](PipelineToken& token, RuntimeContext& runtime, SegmentRegistry& registry) {
+            if (event_stage_) {
+                event_stage_->process(token, runtime, registry);
+            }
+        };
+
+        if (runtime_dag_executor_) {
+            runtime_dag_executor_->set_stage_callback(PipelineStageRole::Vad, vad_callback);
+            runtime_dag_executor_->set_stage_callback(PipelineStageRole::Feature, feature_callback);
+            runtime_dag_executor_->set_stage_callback(PipelineStageRole::Asr, asr_callback);
+            runtime_dag_executor_->set_stage_callback(PipelineStageRole::Event, event_callback);
+        } else if (pipeline_executor_) {
+            pipeline_executor_->set_vad_stage(vad_callback);
+            pipeline_executor_->set_feature_stage(feature_callback);
+            pipeline_executor_->set_asr_stage(asr_callback);
+            pipeline_executor_->set_event_stage(event_callback);
         }
         init_alerting();
 
@@ -613,17 +822,33 @@ void EngineRuntime::ingest_frame(AudioFramePtr frame) {
         return;
     }
 
-    pipeline_manager_->run_stream(*context_, *stream_store_, false);
+    PipelineToken token;
+    token.token_id = next_pipeline_token_id_.fetch_add(1, std::memory_order_acq_rel);
+    token.stream_id = frame->stream_id;
+    token.pts_begin_ms = frame->pts_ms;
+    token.pts_end_ms = frame->pts_ms + frame->dur_ms;
+    token.eos = frame->eos;
+    token.kind = frame->eos ? PipelineTokenKind::EndOfStream : PipelineTokenKind::AudioWindow;
+    token.audio = frame->samples;
+    if (runtime_dag_executor_) {
+        runtime_dag_executor_->push(std::move(token));
+    } else if (pipeline_executor_) {
+        pipeline_executor_->push(std::move(token));
+    }
     if (frame->eos) {
         stream_finalized_.store(true, std::memory_order_release);
-        pipeline_manager_->run_stream(*context_, *stream_store_, true);
+        if (runtime_dag_executor_) {
+            runtime_dag_executor_->finish();
+        } else if (pipeline_executor_) {
+            pipeline_executor_->finish();
+        }
     }
 
     signal_event_work();
 }
 
 void EngineRuntime::finalize_stream_if_needed() {
-    if (!context_ || !pipeline_manager_ || !stream_store_) {
+    if (!context_) {
         return;
     }
     if (!has_input_.load(std::memory_order_acquire)) {
@@ -637,11 +862,22 @@ void EngineRuntime::finalize_stream_if_needed() {
     if (!input_eof_seen_.exchange(true, std::memory_order_acq_rel)) {
         input_eof_time_ = std::chrono::steady_clock::now();
     }
-    if (offline_mode_) {
-        pipeline_manager_->run_stream(*context_, *stream_store_, false);
+    if (runtime_dag_executor_) {
+        runtime_dag_executor_->finish();
+    } else if (pipeline_executor_) {
+        pipeline_executor_->finish();
     }
-    pipeline_manager_->run_stream(*context_, *stream_store_, true);
     signal_event_work();
+}
+
+void EngineRuntime::await_pipeline_drain_if_needed() {
+    if (runtime_dag_executor_) {
+        runtime_dag_executor_->wait();
+        return;
+    }
+    if (pipeline_executor_) {
+        pipeline_executor_->wait();
+    }
 }
 
 void EngineRuntime::drain_asr_events() {
@@ -821,6 +1057,8 @@ void EngineRuntime::signal_event_work() {
 
 void EngineRuntime::emit_stream_drained_once() {
     if (!stream_drained_emitted_.exchange(true, std::memory_order_acq_rel)) {
+        stream_drained_time_ = std::chrono::steady_clock::now();
+        stream_drained_seen_.store(true, std::memory_order_release);
         emit_status("stream_drained");
     }
 }
@@ -833,10 +1071,11 @@ void EngineRuntime::update_time_breakdown(ProcessingStats& target, std::chrono::
     }
 
     target.operator_total_time_ms = operator_total_ms;
-    target.non_operator_time_ms = std::max(0.0, target.total_processing_time_ms - operator_total_ms);
+    const double operator_share_basis_ms = std::min(operator_total_ms, target.total_processing_time_ms);
+    target.non_operator_time_ms = std::max(0.0, target.total_processing_time_ms - operator_share_basis_ms);
 
     if (target.total_processing_time_ms > 0.0) {
-        target.operator_time_percent = operator_total_ms / target.total_processing_time_ms * 100.0;
+        target.operator_time_percent = operator_share_basis_ms / target.total_processing_time_ms * 100.0;
         target.non_operator_time_percent = target.non_operator_time_ms / target.total_processing_time_ms * 100.0;
     } else {
         target.operator_time_percent = 0.0;
@@ -872,8 +1111,10 @@ void EngineRuntime::update_time_breakdown(ProcessingStats& target, std::chrono::
     }
 
     if (input_eof_seen_.load(std::memory_order_acquire)) {
+        const auto drain_end =
+            stream_drained_seen_.load(std::memory_order_acquire) ? stream_drained_time_ : now;
         target.drain_after_eof_ms = std::max(
-            0.0, std::chrono::duration<double, std::milli>(now - input_eof_time_).count());
+            0.0, std::chrono::duration<double, std::milli>(drain_end - input_eof_time_).count());
         target.eof_detected_at_ms = std::max(
             0.0, std::chrono::duration<double, std::milli>(input_eof_time_ - stats_start_time_).count());
     } else {

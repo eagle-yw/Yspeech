@@ -1,6 +1,7 @@
 {
-  "name": "Two-Level Paraformer ASR",
+  "name": "Two-Level Paraformer ASR Template",
   "version": "1.0",
+  "task": "asr",
   "mode": "streaming",
   "log_level": "info",
   "global": {

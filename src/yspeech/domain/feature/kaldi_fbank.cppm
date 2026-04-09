@@ -3,24 +3,38 @@ module;
 #include <nlohmann/json.hpp>
 #include <kaldi-native-fbank/csrc/online-feature.h>
 
-export module yspeech.op.feature.kaldi_fbank;
+export module yspeech.domain.feature.kaldi_fbank;
 
 import std;
-import yspeech.context;
-import yspeech.op;
+import yspeech.domain.feature.base;
 import yspeech.log;
-import yspeech.frame_ring;
-import yspeech.stream_store;
-import yspeech.types;
-import yspeech.data_keys;
 
 namespace yspeech {
 
-export class OpKaldiFbank {
-public:
-    OpKaldiFbank() = default;
+namespace {
 
-    void init(const nlohmann::json& config) {
+struct CmvnStatsCacheEntry {
+    std::vector<float> means;
+    std::vector<float> vars;
+};
+
+auto cmvn_cache() -> std::unordered_map<std::string, CmvnStatsCacheEntry>& {
+    static std::unordered_map<std::string, CmvnStatsCacheEntry> cache;
+    return cache;
+}
+
+auto cmvn_cache_mutex() -> std::mutex& {
+    static std::mutex mutex;
+    return mutex;
+}
+
+} // namespace
+
+export class KaldiFbankCore : public FeatureCoreIface {
+public:
+    KaldiFbankCore() = default;
+
+    void init(const nlohmann::json& config) override {
         knf::FbankOptions opts;
         
         if (config.contains("num_bins")) {
@@ -63,17 +77,6 @@ public:
         opts_ = opts;
         fbank_ = std::make_unique<knf::OnlineFbank>(opts);
         
-        if (config.contains("input_frame_key")) {
-            input_frame_key_ = config["input_frame_key"].get<std::string>();
-        }
-        if (config.contains("output_key")) {
-            output_key_ = config["output_key"].get<std::string>();
-        }
-        reader_key_ = output_key_ + "_reader";
-        if (config.contains("reader_key")) {
-            reader_key_ = config["reader_key"].get<std::string>();
-        }
-        
         if (config.contains("cmvn_file")) {
             cmvn_file_ = config["cmvn_file"].get<std::string>();
             load_cmvn_stats();
@@ -102,86 +105,26 @@ public:
             max_accumulated_frames_ = config["max_accumulated_frames"].get<int>();
         }
         
-        log_debug("OpKaldiFbank initialized with KNF: num_bins={}, sample_rate={}, frame_shift={}ms, lfr={}/{}",
+        log_debug("KaldiFbankCore initialized with KNF: num_bins={}, sample_rate={}, frame_shift={}ms, lfr={}/{}",
                  opts.mel_opts.num_bins, opts.frame_opts.samp_freq, opts.frame_opts.frame_shift_ms,
                  lfr_window_size_, lfr_window_shift_);
     }
 
-    bool ready(Context&, StreamStore& store) {
-        return store.has_unread(input_frame_key_, reader_key_) ||
-               (fbank_ && fbank_->NumFramesReady() > frames_read_) ||
-               eos_seen_;
-    }
-
-    StreamProcessResult process_stream(Context& ctx, StreamStore& store) {
-        std::vector<float> audio_data;
-        bool saw_eos = false;
-        std::size_t consumed = 0;
-
-        while (true) {
-            auto read_result = store.read_frame(input_frame_key_, reader_key_);
-            if (read_result.status == FrameReadStatus::Empty) {
-                break;
-            }
-            if (read_result.status == FrameReadStatus::Overrun) {
-                log_warn("Fbank reader '{}' overrun: requested_seq={}, oldest_available_seq={}",
-                         reader_key_, read_result.requested_seq, read_result.oldest_available_seq);
-                store.seek_reader_to_oldest(input_frame_key_, reader_key_);
-                return StreamProcessResult{
-                    .status = StreamProcessStatus::OverrunRecovered,
-                    .wake_downstream = false
-                };
-            }
-
-            auto frame = read_result.frame;
-            if (!frame) {
-                if (read_result.status == FrameReadStatus::Eof) {
-                    saw_eos = true;
-                }
-                continue;
-            }
-            ++consumed;
-            if (!frame->gap && !frame->samples.empty()) {
-                audio_data.insert(audio_data.end(), frame->samples.begin(), frame->samples.end());
-            }
-            if (frame->eos || read_result.status == FrameReadStatus::Eof) {
-                saw_eos = true;
-            }
+    auto process_samples(std::span<const float> audio, bool eos = false) -> std::optional<KaldiFbankOutput> override {
+        if (!fbank_) {
+            return std::nullopt;
         }
-
-        if (!audio_data.empty()) {
-            fbank_->AcceptWaveform(opts_.frame_opts.samp_freq, audio_data.data(), static_cast<int32_t>(audio_data.size()));
+        if (!audio.empty()) {
+            fbank_->AcceptWaveform(opts_.frame_opts.samp_freq, audio.data(), static_cast<int32_t>(audio.size()));
         }
-        if (saw_eos) {
+        if (eos) {
             fbank_->InputFinished();
             eos_seen_ = true;
         }
-
-        auto produced = publish_features(ctx);
-        return StreamProcessResult{
-            .status = produced ? StreamProcessStatus::ProducedOutput :
-                      consumed > 0 ? StreamProcessStatus::ConsumedInput :
-                                     StreamProcessStatus::NeedMoreInput,
-            .consumed_frames = consumed,
-            .produced_items = produced ? 1u : 0u,
-            .wake_downstream = produced
-        };
+        return build_output();
     }
 
-    StreamProcessResult flush(Context& ctx, StreamStore&) {
-        auto produced = publish_features(ctx);
-        if (eos_seen_) {
-            eos_seen_ = false;
-            return StreamProcessResult{
-                .status = StreamProcessStatus::StreamFinalized,
-                .produced_items = produced ? 1u : 0u,
-                .wake_downstream = produced
-            };
-        }
-        return {};
-    }
-
-    void deinit() {
+    void deinit() override {
         accumulated_features_.clear();
         lfr_feature_buffer_.clear();
         fbank_.reset();
@@ -200,37 +143,12 @@ public:
     }
 
 private:
-    std::unique_ptr<knf::OnlineFbank> fbank_;
-    knf::FbankOptions opts_;
-    std::string input_frame_key_ = "audio_frames";
-    std::string reader_key_ = "fbank_reader";
-    std::string output_key_ = "fbank";
-    std::string cmvn_file_;
-    
-    int lfr_window_size_ = 1;
-    int lfr_window_shift_ = 1;
-    int32_t frames_read_ = 0;
-    
-    std::vector<float> cmvn_means_;
-    std::vector<float> cmvn_vars_;
-    bool normalize_means_ = true;
-    bool normalize_vars_ = true;
-    
-    bool enable_accumulation_ = false;
-    int min_accumulated_frames_ = 15;
-    int max_accumulated_frames_ = 100;
-    std::vector<std::vector<float>> accumulated_features_;
-    std::vector<std::vector<float>> lfr_feature_buffer_;
-    std::size_t lfr_next_start_ = 0;
-    std::uint64_t output_version_ = 0;
-    bool eos_seen_ = false;
-
-    bool publish_features(Context& ctx) {
+    auto build_output() -> std::optional<KaldiFbankOutput> {
         int32_t num_frames = fbank_->NumFramesReady();
         int32_t frames_to_read = num_frames - frames_read_;
 
         if (frames_to_read <= 0) {
-            return false;
+            return std::nullopt;
         }
 
         std::vector<std::vector<float>> features;
@@ -250,39 +168,58 @@ private:
         }
 
         if (features.empty()) {
-            return false;
+            return std::nullopt;
         }
 
         if (enable_accumulation_) {
-            accumulated_features_.insert(accumulated_features_.end(),
-                                         features.begin(), features.end());
-
-            if (accumulated_features_.size() >= static_cast<size_t>(min_accumulated_frames_)) {
-                ctx.set(output_key_ + "_features", accumulated_features_);
-                ctx.set(output_key_ + "_num_frames", static_cast<int>(accumulated_features_.size()));
-
-                if (accumulated_features_.size() > static_cast<size_t>(max_accumulated_frames_)) {
-                    accumulated_features_.erase(
-                        accumulated_features_.begin(),
-                        accumulated_features_.end() - max_accumulated_frames_);
-                }
-            } else {
-                ctx.set(output_key_ + "_features", std::vector<std::vector<float>>{});
-                ctx.set(output_key_ + "_num_frames", 0);
-                return false;
+            accumulated_features_.insert(accumulated_features_.end(), features.begin(), features.end());
+            if (accumulated_features_.size() < static_cast<size_t>(min_accumulated_frames_)) {
+                return std::nullopt;
             }
-        } else {
-            ctx.set(output_key_ + "_features", features);
-            ctx.set(output_key_ + "_num_frames", static_cast<int>(features.size()));
+            if (accumulated_features_.size() > static_cast<size_t>(max_accumulated_frames_)) {
+                accumulated_features_.erase(
+                    accumulated_features_.begin(),
+                    accumulated_features_.end() - max_accumulated_frames_);
+            }
+            features = accumulated_features_;
         }
 
-        ctx.set(output_key_ + "_num_bins", fbank_->Dim() * lfr_window_size_);
-        ctx.set(output_key_ + "_version", static_cast<std::uint64_t>(++output_version_));
-        return true;
+        return KaldiFbankOutput{
+            .features = std::move(features),
+            .num_frames = enable_accumulation_
+                ? static_cast<int>(accumulated_features_.size())
+                : static_cast<int>(frames_to_read),
+            .num_bins = fbank_->Dim() * lfr_window_size_,
+            .version = static_cast<std::uint64_t>(++output_version_)
+        };
     }
+
+    std::unique_ptr<knf::OnlineFbank> fbank_;
+    knf::FbankOptions opts_;
+    std::vector<float> cmvn_means_;
+    std::vector<float> cmvn_vars_;
+    bool normalize_means_ = true;
+    bool normalize_vars_ = true;
+    int lfr_window_size_ = 1;
+    int lfr_window_shift_ = 1;
+    int32_t frames_read_ = 0;
+    bool enable_accumulation_ = false;
+    int min_accumulated_frames_ = 15;
+    int max_accumulated_frames_ = 100;
+    std::vector<std::vector<float>> accumulated_features_;
+    std::vector<std::vector<float>> lfr_feature_buffer_;
+    std::size_t lfr_next_start_ = 0;
+    std::uint64_t output_version_ = 0;
+    bool eos_seen_ = false;
 
     void load_cmvn_stats() {
         if (cmvn_file_.empty()) return;
+        std::lock_guard lock(cmvn_cache_mutex());
+        if (auto it = cmvn_cache().find(cmvn_file_); it != cmvn_cache().end()) {
+            cmvn_means_ = it->second.means;
+            cmvn_vars_ = it->second.vars;
+            return;
+        }
         
         std::ifstream file(cmvn_file_);
         if (!file.is_open()) {
@@ -318,6 +255,10 @@ private:
             } else if (learn_rate_coef_count == 1) {
                 cmvn_vars_ = std::move(values);
                 log_info("Loaded CMVN inv_std: {} values", cmvn_vars_.size());
+                cmvn_cache()[cmvn_file_] = CmvnStatsCacheEntry{
+                    .means = cmvn_means_,
+                    .vars = cmvn_vars_
+                };
                 break;
             }
             learn_rate_coef_count++;
@@ -337,7 +278,7 @@ private:
         }
     }
     
-    std::vector<std::vector<float>> apply_lfr(const std::vector<std::vector<float>>& features) {
+    auto apply_lfr(const std::vector<std::vector<float>>& features) -> std::vector<std::vector<float>> {
         if (features.empty()) {
             return features;
         }
@@ -346,11 +287,7 @@ private:
             return features;
         }
 
-        lfr_feature_buffer_.insert(
-            lfr_feature_buffer_.end(),
-            features.begin(),
-            features.end()
-        );
+        lfr_feature_buffer_.insert(lfr_feature_buffer_.end(), features.begin(), features.end());
 
         const int num_bins = static_cast<int>(lfr_feature_buffer_.front().size());
         std::vector<std::vector<float>> lfr_features;
@@ -383,11 +320,13 @@ private:
 
         return lfr_features;
     }
+
+    std::string cmvn_file_;
 };
 
 namespace {
 
-OperatorRegistrar<OpKaldiFbank> registrar("KaldiFbank");
+FeatureCoreRegistrar<KaldiFbankCore> kaldi_fbank_core_registrar("KaldiFbank");
 
 }
 

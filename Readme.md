@@ -1,15 +1,15 @@
 # Yspeech
 
-**Yspeech** 是一个基于 C++23 模块的现代化语音处理管道框架，当前以流式 `AudioFrame` 处理和配置驱动的 operator 编排为核心。
+**Yspeech** 是一个基于 C++23 模块的现代化语音处理管道框架，当前以流式 `AudioFrame` 处理、配置驱动的 stage/core 编排，以及 `Taskflow` 线性流水线执行为核心。
 
 ## 核心特性
 
 - C++23 模块
 - `AudioFrame` 流式处理
-- `Taskflow` 驱动的 stage/operator 调度
+- `Taskflow` 驱动的 stage/core 调度
 - JSON 配置驱动
 - `Engine` 统一事件、状态和性能回调
-- 可扩展的 Operator / Capability / Aspect 体系
+- 可扩展的 Core / Capability / Aspect 体系
 
 ## 快速开始
 
@@ -40,8 +40,10 @@ cmake --build build
 
 - 设计文档
   - [设计文档](doc/design.md) - 代码设计、运行链路、配置生效边界
+  - [推荐开发基线](doc/recommended-baseline.md) - 当前默认主线、推荐配置与回归测试
+  - [开发者扩展指南](doc/developer-extension.md) - 新增 runtime/domain 能力时的目录与职责约定
   - [架构设计](doc/architecture.md) - 系统结构和时序
-  - [核心组件](doc/components.md) - `Engine`、`EngineRuntime`、`PipelineManager` 等职责划分
+  - [核心组件](doc/components.md) - `Engine`、`EngineRuntime`、runtime DAG 与 stage/core 分层
   - [配置说明](doc/configuration.md) - 配置字段、实际生效项和限制
   - [性能说明](doc/performance.md) - 统计项、benchmark 用法和调优关注点
 - 使用说明
@@ -76,11 +78,24 @@ int main() {
 }
 ```
 
-## 当前实现的几个重要事实
+## 当前推荐事实
 
-- 主执行入口是 `run_stream(ctx, store, flush)`
-- 当前已注册 operator 只有 `SileroVad`、`KaldiFbank`、`AsrParaformer`、`AsrSenseVoice`、`AsrWhisper`
+- 单线流式 ASR 的默认开发基线是 `examples/configs/streaming_paraformer_asr.json`
+- `streaming_demo` 默认就使用这条单线 Taskflow 配置
+- `EngineRuntime` 的流式运行时已经统一切到 Taskflow 主线
+- 新运行时已支持“配置驱动、启动期构图、运行期静态 DAG”的模式
+- 线性 stage 段由 `tf::Pipeline` 执行，`Branch/Join` 由 `RuntimeDagExecutor` 负责最小路由与汇聚语义
+- 当前已注册 core 名称只有 `SileroVad`、`KaldiFbank`、`AsrParaformer`、`AsrSenseVoice`、`AsrWhisper`
 - 顶层 `output`、`pipeline.push_chunk_samples`、`ops[].parallel` 目前不应被理解为稳定自动行为
+
+## 推荐 Taskflow 示例
+
+- 线性新运行时：
+  [examples/configs/streaming_paraformer_asr.json](/Users/eagle/workspace/Playground/Yspeech/examples/configs/streaming_paraformer_asr.json)
+- 静态 DAG + join：
+  [examples/configs/streaming_paraformer_asr_dag.json](/Users/eagle/workspace/Playground/Yspeech/examples/configs/streaming_paraformer_asr_dag.json)
+- 静态 DAG + join timeout：
+  [examples/configs/streaming_paraformer_asr_dag_timeout.json](/Users/eagle/workspace/Playground/Yspeech/examples/configs/streaming_paraformer_asr_dag_timeout.json)
 
 ## 致谢
 

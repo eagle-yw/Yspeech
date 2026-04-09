@@ -8,7 +8,7 @@ import std;
 import yspeech.engine_runtime;
 import yspeech.frame_source;
 import yspeech.log;
-import yspeech.runtime_common;
+import yspeech.runtime.common;
 import yspeech.types;
 
 namespace yspeech {

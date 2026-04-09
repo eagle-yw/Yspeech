@@ -8,7 +8,7 @@
 |------|------|------|------|
 | nlohmann_json | 3.12.0 | Header-only | JSON 配置解析 |
 | GoogleTest | 1.17.0 | 静态库 | 单元测试 |
-| Taskflow | 4.0.0 | Header-only | stage/operator 调度 |
+| Taskflow | 4.0.0 | Header-only | stage/core 流水线调度 |
 | spdlog | 1.17.0 | Header-only | 日志 |
 | kaldi-native-fbank | 1.20.0 | 静态库 | fbank 特征提取 |
 | ONNX Runtime | 1.24.3 | 预编译库 | 模型推理 |

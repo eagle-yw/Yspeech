@@ -5,7 +5,7 @@ module;
 export module yspeech.capability;
 
 import std;
-import yspeech.context;
+import yspeech.runtime.runtime_context;
 
 namespace yspeech {
 
@@ -17,9 +17,9 @@ export enum class CapabilityPhase {
 };
 
 export template <typename T>
-concept Capability = requires(T t, Context& ctx, const json& config) {
+concept Capability = requires(T t, RuntimeContext& runtime, const json& config) {
     { t.init(config) } -> std::same_as<void>;
-    { t.apply(ctx) } -> std::same_as<void>;
+    { t.apply(runtime) } -> std::same_as<void>;
     { t.phase() } -> std::same_as<CapabilityPhase>;
 };
 
@@ -40,8 +40,8 @@ public:
         self_->init(config);
     }
 
-    auto apply(Context& ctx) -> void {
-        self_->apply(ctx);
+    auto apply(RuntimeContext& runtime) -> void {
+        self_->apply(runtime);
     }
 
     auto name() const -> const std::string& {
@@ -59,7 +59,7 @@ public:
     struct Concept {
         virtual ~Concept() = default;
         virtual auto init(const json& config) -> void = 0;
-        virtual auto apply(Context& ctx) -> void = 0;
+        virtual auto apply(RuntimeContext& runtime) -> void = 0;
         virtual auto type() const -> const std::type_info& = 0;
     };
 
@@ -72,8 +72,8 @@ public:
             cap_.init(config);
         }
 
-        auto apply(Context& ctx) -> void override {
-            cap_.apply(ctx);
+        auto apply(RuntimeContext& runtime) -> void override {
+            cap_.apply(runtime);
         }
 
         auto type() const -> const std::type_info& override {

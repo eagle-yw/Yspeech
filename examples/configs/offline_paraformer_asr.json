@@ -1,6 +1,7 @@
 {
-  "name": "Paraformer ASR",
+  "name": "Offline Paraformer ASR",
   "version": "1.0",
+  "task": "asr",
   "mode": "offline",
   "source": {
     "type": "file",

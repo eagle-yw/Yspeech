@@ -5,29 +5,12 @@
 #include <fstream>
 
 import std;
-import yspeech.context;
-import yspeech.stream_store;
-import yspeech.types;
-import yspeech.op;
-import yspeech.op.feature.kaldi_fbank;
+import yspeech.domain.feature.base;
+import yspeech.domain.feature.kaldi_fbank;
 
 using namespace yspeech;
 
 namespace {
-
-AudioFramePtr make_frame(const std::vector<float>& samples, std::uint64_t seq, bool eos = false) {
-    static AudioFramePool pool;
-    auto frame = pool.acquire(samples.size());
-    frame->stream_id = "fbank_extended";
-    frame->seq = seq;
-    frame->sample_rate = 16000;
-    frame->channels = 1;
-    frame->pts_ms = static_cast<std::int64_t>(seq * 10);
-    frame->dur_ms = 10;
-    frame->eos = eos;
-    frame->samples = samples;
-    return frame;
-}
 
 std::vector<float> generate_audio(float duration_sec, float dc_offset = 0.0f) {
     std::vector<float> audio;
@@ -41,29 +24,16 @@ std::vector<float> generate_audio(float duration_sec, float dc_offset = 0.0f) {
     return audio;
 }
 
-void push_audio(StreamStore& store, const std::vector<float>& audio) {
-    constexpr std::size_t frame_samples = 160;
-    std::uint64_t seq = 0;
-    for (std::size_t offset = 0; offset < audio.size(); offset += frame_samples, ++seq) {
-        const auto end = std::min(offset + frame_samples, audio.size());
-        std::vector<float> chunk(audio.begin() + static_cast<std::ptrdiff_t>(offset),
-                                 audio.begin() + static_cast<std::ptrdiff_t>(end));
-        store.push_frame("audio_frames", make_frame(chunk, seq, end == audio.size()));
-    }
-}
-
-OpKaldiFbank create_fbank(const nlohmann::json& extra = {}) {
-    OpKaldiFbank fbank;
+auto create_fbank(const nlohmann::json& extra = {}) -> std::unique_ptr<FeatureCoreIface> {
+    auto fbank = FeatureCoreFactory::get_instance().create_core("KaldiFbank");
     nlohmann::json config = {
         {"sample_rate", 16000},
-        {"num_bins", 80},
-        {"input_frame_key", "audio_frames"},
-        {"output_key", "fbank"}
+        {"num_bins", 80}
     };
     for (const auto& [key, value] : extra.items()) {
         config[key] = value;
     }
-    fbank.init(config);
+    fbank->init(config);
     return fbank;
 }
 
@@ -72,12 +42,10 @@ OpKaldiFbank create_fbank(const nlohmann::json& extra = {}) {
 TEST(TestKaldiFbankExtended, WindowTypes) {
     for (const auto* window_type : {"povey", "hamming", "hanning"}) {
         auto fbank = create_fbank({{"window_type", window_type}});
-        Context ctx;
-        StreamStore store;
-        store.init_audio_ring("audio_frames", 2048);
-        push_audio(store, generate_audio(1.0f));
-        EXPECT_NO_THROW(fbank.process_stream(ctx, store));
-        EXPECT_TRUE(ctx.contains("fbank_features"));
+        auto result = fbank->process_samples(generate_audio(1.0f), true);
+        EXPECT_NO_THROW((void)result);
+        ASSERT_TRUE(result.has_value());
+        EXPECT_FALSE(result->features.empty());
     }
 }
 
@@ -86,36 +54,24 @@ TEST(TestKaldiFbankExtended, PreemphasisAndDcOffset) {
         {"preemph_coeff", 0.97f},
         {"remove_dc_offset", true}
     });
-    Context ctx;
-    StreamStore store;
-    store.init_audio_ring("audio_frames", 4096);
-    push_audio(store, generate_audio(2.0f, 0.5f));
-    fbank.process_stream(ctx, store);
-    EXPECT_TRUE(ctx.contains("fbank_features"));
+    auto result = fbank->process_samples(generate_audio(2.0f, 0.5f), true);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->features.empty());
 }
 
 TEST(TestKaldiFbankExtended, EmptyAndShortAudio) {
     auto fbank = create_fbank();
-    Context ctx;
-    StreamStore store;
-    store.init_audio_ring("audio_frames", 32);
-    EXPECT_EQ(fbank.process_stream(ctx, store).status, StreamProcessStatus::NeedMoreInput);
-
-    push_audio(store, generate_audio(0.02f));
-    EXPECT_NO_THROW(fbank.process_stream(ctx, store));
+    auto empty = fbank->process_samples({}, false);
+    EXPECT_FALSE(empty.has_value());
+    EXPECT_NO_THROW((void)fbank->process_samples(generate_audio(0.02f), true));
 }
 
 TEST(TestKaldiFbankExtended, FeatureValuesReasonable) {
     auto fbank = create_fbank();
-    Context ctx;
-    StreamStore store;
-    store.init_audio_ring("audio_frames", 4096);
-    push_audio(store, generate_audio(2.0f));
-    fbank.process_stream(ctx, store);
-
-    auto features = ctx.get<std::vector<std::vector<float>>>("fbank_features");
-    ASSERT_FALSE(features.empty());
-    for (const auto& frame : features) {
+    auto result = fbank->process_samples(generate_audio(2.0f), true);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_FALSE(result->features.empty());
+    for (const auto& frame : result->features) {
         for (float value : frame) {
             EXPECT_TRUE(std::isfinite(value));
             EXPECT_LT(value, 20.0f);
@@ -124,12 +80,12 @@ TEST(TestKaldiFbankExtended, FeatureValuesReasonable) {
     }
 }
 
-TEST(TestKaldiFbankExtended, MoveSemantics) {
+TEST(TestKaldiFbankExtended, FactoryCreatesFreshInstances) {
     auto fbank1 = create_fbank();
-    OpKaldiFbank fbank2 = std::move(fbank1);
-    EXPECT_EQ(fbank2.feature_dim(), 80);
-
-    OpKaldiFbank fbank3;
-    fbank3 = std::move(fbank2);
-    EXPECT_EQ(fbank3.feature_dim(), 80);
+    auto fbank2 = create_fbank();
+    auto result1 = fbank1->process_samples(generate_audio(0.2f), true);
+    auto result2 = fbank2->process_samples(generate_audio(0.2f), true);
+    ASSERT_TRUE(result1.has_value());
+    ASSERT_TRUE(result2.has_value());
+    EXPECT_EQ(result1->num_bins, result2->num_bins);
 }

@@ -2,23 +2,14 @@ module;
 
 #include <nlohmann/json.hpp>
 
-export module yspeech.runtime_common;
+export module yspeech.runtime.common;
 
 import std;
 import yspeech.context;
 import yspeech.log;
 import yspeech.pipeline_config;
-import yspeech.pipeline_manager;
-import yspeech.stream_store;
 
 namespace yspeech {
-
-export struct RuntimeComponents {
-    PipelineConfig pipeline_config;
-    std::unique_ptr<StreamStore> stream_store;
-    std::unique_ptr<PipelineManager> pipeline_manager;
-    std::unique_ptr<Context> context;
-};
 
 export struct FrameConfig {
     int sample_rate = 16000;
@@ -86,16 +77,6 @@ export inline auto load_runtime_config_with_file_source(
     auto config = load_runtime_config(config_path);
     apply_file_source_override(config, audio_path, playback_rate);
     return config;
-}
-
-export inline auto build_runtime_components(const nlohmann::json& config) -> RuntimeComponents {
-    RuntimeComponents components;
-    components.pipeline_config = PipelineConfig::from_json(config);
-    components.stream_store = std::make_unique<StreamStore>();
-    components.pipeline_manager = std::make_unique<PipelineManager>();
-    components.pipeline_manager->build(components.pipeline_config);
-    components.context = std::make_unique<Context>();
-    return components;
 }
 
 export inline auto read_runtime_int_config(

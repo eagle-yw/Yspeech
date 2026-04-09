@@ -3,12 +3,12 @@ module;
 #include <nlohmann/json.hpp>
 #include <onnxruntime_cxx_api.h>
 
-export module yspeech.op.asr.whisper;
+export module yspeech.domain.asr.whisper;
 
 import std;
 import yspeech.context;
-import yspeech.op;
-import yspeech.op.asr.base;
+import yspeech.stream_process;
+import yspeech.domain.asr.base;
 import yspeech.frame_ring;
 import yspeech.stream_store;
 import yspeech.types;
@@ -16,15 +16,8 @@ import yspeech.log;
 
 namespace yspeech {
 
-export class OpAsrWhisper : public AsrBase {
+export class WhisperCore : public AsrBase, public AsrCoreIface {
 public:
-    OpAsrWhisper() = default;
-
-    OpAsrWhisper(const OpAsrWhisper&) = delete;
-    OpAsrWhisper& operator=(const OpAsrWhisper&) = delete;
-    OpAsrWhisper(OpAsrWhisper&&) noexcept = default;
-    OpAsrWhisper& operator=(OpAsrWhisper&&) noexcept = default;
-
     void init(const nlohmann::json& config) override {
         AsrBase::init(config);
 
@@ -38,101 +31,24 @@ public:
         init_onnx_session();
         load_tokens();
 
-        log_info("OpAsrWhisper initialized: model_path={}, task={}, detect_language={}",
+        log_info("WhisperCore initialized: model_path={}, task={}, detect_language={}",
                  model_path_, task_, detect_language_);
     }
 
-    bool ready(Context&, StreamStore& store) {
-        return store.has_unread(input_frame_key_, reader_key_) ||
-               collected_samples_ >= static_cast<size_t>(sample_rate_ * 30) ||
-               eos_seen_;
+    StreamProcessResult process_stream(Context&, StreamStore&) override {
+        return {};
     }
 
-    StreamProcessResult process_stream(Context& ctx, StreamStore& store) override {
-        std::vector<float> audio_data;
-        std::size_t consumed = 0;
-        const int max_samples = sample_rate_ * 30;
-
-        while (collected_audio_.size() < static_cast<size_t>(max_samples)) {
-            auto read_result = store.read_frame(input_frame_key_, reader_key_);
-            if (read_result.status == FrameReadStatus::Empty) {
-                break;
-            }
-            if (read_result.status == FrameReadStatus::Overrun) {
-                store.seek_reader_to_oldest(input_frame_key_, reader_key_);
-                return {
-                    .status = StreamProcessStatus::OverrunRecovered
-                };
-            }
-
-            auto frame = read_result.frame;
-            if (!frame || frame->gap || frame->samples.empty()) {
-                if (read_result.status == FrameReadStatus::Eof) {
-                    eos_seen_ = true;
-                }
-                continue;
-            }
-
-            ++consumed;
-            collected_audio_.insert(collected_audio_.end(), frame->samples.begin(), frame->samples.end());
-            collected_samples_ = collected_audio_.size();
-            if (frame->eos || read_result.status == FrameReadStatus::Eof) {
-                eos_seen_ = true;
-                break;
-            }
-        }
-
-        if (collected_audio_.empty()) {
-            return {
-                .status = consumed > 0 ? StreamProcessStatus::ConsumedInput : StreamProcessStatus::NeedMoreInput
-            };
-        }
-
-        if (collected_audio_.size() < static_cast<size_t>(max_samples) && !eos_seen_) {
-            return {
-                .status = consumed > 0 ? StreamProcessStatus::ConsumedInput : StreamProcessStatus::NeedMoreInput
-            };
-        }
-
-        audio_data = prepare_audio(collected_audio_);
-        auto features = extract_log_mel_spectrogram(audio_data);
-        AsrResult result = infer(features);
-
-        ctx.set(output_key_ + "_text", result.text);
-        ctx.set(output_key_ + "_confidence", result.confidence);
-        ctx.set(output_key_ + "_language", result.language);
-
-        auto results = ctx.get_or_default(output_key_ + "_results", std::vector<AsrResult>{});
-        results.push_back(result);
-        ctx.set(output_key_ + "_results", std::move(results));
-
-        auto events = ctx.get_or_default(output_key_ + "_events", std::vector<AsrEvent>{});
-        events.push_back(AsrEvent{
-            .kind = eos_seen_ ? AsrResultKind::StreamFinal : AsrResultKind::Partial,
-            .result = result
-        });
-        ctx.set(output_key_ + "_events", std::move(events));
-
-        collected_audio_.clear();
-        collected_samples_ = 0;
-        const auto status = eos_seen_ ? StreamProcessStatus::StreamFinalized : StreamProcessStatus::ProducedOutput;
-        eos_seen_ = false;
-
-        return {
-            .status = status,
-            .consumed_frames = consumed,
-            .produced_items = 1,
-            .wake_downstream = true
-        };
-    }
-
-    StreamProcessResult flush(Context& ctx, StreamStore& store) override {
-        eos_seen_ = true;
-        return process_stream(ctx, store);
+    StreamProcessResult flush(Context&, StreamStore&) override {
+        return {};
     }
 
     void deinit() override {
         session_.reset();
+        env_.reset();
+        collected_audio_.clear();
+        collected_samples_ = 0;
+        eos_seen_ = false;
         AsrBase::deinit();
     }
 
@@ -230,7 +146,7 @@ private:
         return mel_spec;
     }
 
-    AsrResult infer(const std::vector<std::vector<float>>& mel_spec) {
+    auto infer(const std::vector<std::vector<float>>& mel_spec) -> AsrResult override {
         AsrResult result;
 
         if (!session_ || mel_spec.empty()) {
@@ -289,10 +205,6 @@ private:
     bool eos_seen_ = false;
 };
 
-namespace {
-
-OperatorRegistrar<OpAsrWhisper> registrar("AsrWhisper");
-
-}
+AsrCoreRegistrar<WhisperCore> whisper_core_registrar("AsrWhisper");
 
 }

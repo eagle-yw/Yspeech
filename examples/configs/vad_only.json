@@ -1,6 +1,7 @@
 {
   "name": "Silero VAD Only",
   "version": "1.0",
+  "task": "vad",
   "mode": "streaming",
   "log_level": "info",
   "global": {

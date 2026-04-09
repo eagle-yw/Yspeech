@@ -39,34 +39,69 @@ engine.stop();
 职责：
 
 - 加载配置并应用日志级别
-- 创建 `StreamStore`、`PipelineManager`、`Context`
+- 创建 source、runtime 执行器与事件线程
 - 决定 `source.type` 对应的输入源实现
-- 驱动 `run_stream(..., flush=false/true)`
+- 在线性配置下驱动 `PipelineExecutor`
+- 在声明了 stage 依赖的配置下驱动 `RuntimeDagExecutor`
 - 汇总性能统计并发出 `input_eof` / `stream_drained`
 
-## 3. PipelineManager
+## 3. PipelineExecutor / RuntimeDagExecutor / EventStage
 
-统一管理单级和多级 pipeline，真实入口只有流式接口：
+当前推荐主线由两层执行器组成：
 
 ```cpp
-yspeech::PipelineManager manager;
-manager.build("config.json");
-manager.run_stream(ctx, store, false);
-manager.run_stream(ctx, store, true);
+yspeech::PipelineExecutor linear_executor;
+yspeech::RuntimeDagExecutor dag_executor;
 ```
 
 职责：
 
-- 根据 `PipelineConfig` 构建 stage
-- 单 stage 直接执行，多 stage 为每个 stage 起线程
-- stage 内部通过 `Taskflow` 跑 operator DAG
+- `PipelineExecutor` 负责线性 stage 路径，并把执行交给 `tf::Pipeline`
+- `RuntimeDagExecutor` 负责静态 DAG 的 `Branch/Join` 路由
+- `EventStage` 负责把 runtime 结果统一派发成 `EngineEvent`
+- stage callback 由执行器绑定到 `VadStage / FeatureStage / AsrStage / EventStage`
 
 限制：
 
 - `parallel` 不直接驱动调度
+- `RuntimeDagExecutor` 只补最小静态 DAG 语义，不替代 `Taskflow`
 - `pipelines[].input/output` 当前不是完整的数据路由实现
 
-## 4. StreamStore / FrameRing
+## 4. 领域 Stage / Core
+
+当前目录已经按领域聚合：
+
+- `src/yspeech/domain/vad/`
+- `src/yspeech/domain/feature/`
+- `src/yspeech/domain/asr/`
+
+每个领域下都可以同时看到两类主代码：
+
+- `Stage`
+  - 负责 token、segment、事件时机、运行时语义
+- `Core`
+  - 负责真实算法与内部状态机
+当前对应关系：
+
+- `VadStage -> SileroVadCore`
+- `FeatureStage -> KaldiFbankCore`
+- `AsrStage -> ParaformerCore / SenseVoiceCore / WhisperCore`
+
+这种组织方式比把所有 stage 全放在单独目录下更适合当前仓库，因为扩展轴主要是按 `vad / feature / asr` 领域生长。
+
+同时，运行时骨架统一放在：
+
+- `src/yspeech/runtime/`
+
+其中包含：
+
+- `PipelineExecutor`
+- `RuntimeDagExecutor`
+- `EventStage`
+- `RuntimeContext`
+- `PipelineToken`
+
+## 5. StreamStore / FrameRing
 
 流式数据面，负责 `AudioFrame` 通道：
 
@@ -84,53 +119,38 @@ auto read = store.read_frame("audio_frames", "vad_reader");
 - 在 reader 落后时支持 overrun 恢复
 - 保留 `eos/gap` 语义
 
-## 5. Context
+## 6. SegmentState / Context
 
-运行时上下文和结果总线：
+当前主线的数据面是 `SegmentState`，`Context` 主要承担通用状态、事件和统计承载：
 
 ```cpp
-yspeech::Context ctx;
-ctx.set("asr_text", text);
-ctx.set("vad_segments", segments);
-auto results = ctx.get<std::vector<yspeech::AsrEvent>>("asr_events");
+yspeech::SegmentState segment;
+segment.audio_accumulated = samples;
+segment.features_accumulated = features;
 ```
 
 职责：
 
-- 持有中间结果 KV
-- 保存 `asr_events`、`vad_segments`
-- 记录错误和性能统计
+- `SegmentState` 保存段级音频、特征和识别结果
+- `Context` 保存事件、错误、性能统计和少量运行时状态
+- 两者都可承载错误和性能统计相关上下文
 
-常见键：
+常见运行时键：
 
 - `asr_events`
 - `vad_segments`
 - `vad_is_speech`
 - `global_eof`
 
-## 6. Operator 系统
+## 7. Core 注册系统
 
-可插拔的 Operator 接口：
+当前主线保留了“按名字注册、按配置创建”的扩展思路，但注册目标已经收敛到领域 core：
 
-```cpp
-struct MyOperator {
-    void init(const json& config) {}
+- `VadCoreFactory`
+- `FeatureCoreFactory`
+- `AsrCoreFactory`
 
-    bool ready(Context& ctx, StreamStore& store) {
-        return true;
-    }
-
-    StreamProcessResult process_stream(Context& ctx, StreamStore& store) {
-        return {};
-    }
-
-    StreamProcessResult flush(Context& ctx, StreamStore& store) {
-        return {};
-    }
-};
-```
-
-当前已注册的 operator：
+当前已注册的 core 名称：
 
 - `SileroVad`
 - `KaldiFbank`
@@ -138,37 +158,64 @@ struct MyOperator {
 - `AsrSenseVoice`
 - `AsrWhisper`
 
-接口特征：
+运行时在构建 stage 时，会根据配置里的 `ops[].name` 选择对应 core。
 
-- `init(config)` 必需
-- `process_stream(ctx, store)` 必需
-- `ready(ctx, store)` 可选
-- `flush(ctx, store)` 可选
+## 8. Capability 系统
 
-## 7. Capability 系统
-
-Operator 能力扩展：
+能力扩展：
 
 ```cpp
-op.install("TimerCapability");
-op.install("LogCapability", {{"log_level", "DEBUG"}});
+install("StatusCapability", {{"status", "feature_pre"}});
+install("LogCapability", {{"message", "before feature stage"}});
 ```
 
 职责：
 
-- 给 operator 注入前后置行为
-- 支持 operator 级和 global 级 capability
-- 从配置里的 `capabilities` 自动安装
+- 给处理节点注入前后置行为
+- 支持节点级和 global 级 capability
+- 当前在 `Stage -> Core` 边界自动安装并执行
+- 适合做“按配置启停”的节点扩展
+- 不负责定义默认 Performance 统计口径
 
-## 8. Aspect 系统
+当前内置 capability：
+
+- `AlertCapability`
+  - 通过 `RuntimeContext.emit_alert` 发告警
+- `StatusCapability`
+  - 通过 `RuntimeContext.emit_status` 发状态
+- `LogCapability`
+  - 通过日志输出一条配置化消息
+
+## 9. Aspect 系统
 
 AOP 切面编程：
 
-```cpp
-pipeline.add_aspect(yspeech::LoggerAspect{});
-pipeline.add_aspect(yspeech::TimerAspect{});
-```
+当前 `Stage` 默认会注入 `TimerAspect`，配置里声明 `LoggerAspect` 时会一起挂到 `Stage -> Core` 边界。
 
-当前 stage 默认会注入 `TimerAspect`。
+职责：
+
+- 处理框架级横切关注点
+- 统一覆盖 `Stage -> Core` 调用边界
+- 适合做计时、tracing、统一日志、性能统计
+- 当前 `streaming_demo` 的 Performance 数据主来源是 `TimerAspect`
+
+## 10. Aspect 与 Capability 的边界
+
+两者都会挂在 `Stage -> Core` 边界，所以都有横切能力，但职责不同：
+
+- `Aspect`
+  - 框架级 AOP
+  - 适合默认启用或由运行时统一管理的行为
+  - 例如：`TimerAspect`、统一 tracing、统一日志
+- `Capability`
+  - 配置驱动的节点扩展
+  - 适合按配置启停、按节点细粒度安装的行为
+  - 例如：某个节点额外发状态、打审计标记、发告警
+
+推荐原则：
+
+- 框架统一关注点优先放 `Aspect`
+- 需要通过配置启停的节点扩展优先放 `Capability`
+- 不要同时为同一件事提供一套 `Aspect` 和一套 `Capability`
 
 详细配置边界见 [configuration.md](/Users/eagle/workspace/Playground/Yspeech/doc/configuration.md)。

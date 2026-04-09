@@ -1,10 +1,17 @@
 {
-  "name": "SenseVoice ASR",
+  "name": "Streaming SenseVoice ASR",
   "version": "1.0",
   "log_level": "info",
+  "task": "asr",
   "mode": "streaming",
+  "runtime": {
+    "pipeline_lines": 2,
+    "pipeline_name": "yspeech.taskflow.streaming"
+  },
   "source": {
-    "type": "file"
+    "type": "file",
+    "path": "model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/test_wavs/zh.wav",
+    "playback_rate": 0.0
   },
   "frame": {
     "sample_rate": 16000,
@@ -12,26 +19,20 @@
     "dur_ms": 10
   },
   "stream": {
-    "ring_capacity_frames": 6000
+    "ring_capacity_frames": 4096
   },
   "pipelines": [
     {
       "id": "vad_stage",
-      "name": "VAD Detection Stage",
-      "max_concurrency": 4,
-      "input": {
-        "key": "audio_frames",
-        "chunk_size": 1600
-      },
+      "name": "VAD Stage",
+      "max_concurrency": 1,
       "ops": [
         {
-          "id": "silero_vad",
+          "id": "vad",
           "name": "SileroVad",
           "params": {
             "model_path": "model/vad/silero_vad.onnx",
-            "threshold": 0.5,
             "sample_rate": 16000,
-            "input_frame_key": "audio_frames",
             "min_speech_duration_ms": 250,
             "min_silence_duration_ms": 100
           }
@@ -39,47 +40,44 @@
       ]
     },
     {
-      "id": "asr_stage",
-      "name": "SenseVoice Recognition Stage",
-      "max_concurrency": 4,
-      "input": {
-        "key": "audio_frames"
-      },
+      "id": "feature_stage",
+      "name": "Feature Stage",
+      "max_concurrency": 2,
       "ops": [
         {
           "id": "fbank",
           "name": "KaldiFbank",
           "params": {
-            "num_bins": 80,
             "sample_rate": 16000,
+            "num_bins": 80,
             "frame_length_ms": 25,
             "frame_shift_ms": 10,
             "dither": 0,
             "snip_edges": false,
-            "input_frame_key": "audio_frames",
-            "output_key": "fbank",
             "lfr_window_size": 7,
-            "lfr_window_shift": 7,
-            "enable_accumulation": true,
-            "min_accumulated_frames": 15,
-            "max_accumulated_frames": 100
+            "lfr_window_shift": 7
           }
-        },
+        }
+      ]
+    },
+    {
+      "id": "asr_stage",
+      "name": "ASR Stage",
+      "max_concurrency": 2,
+      "ops": [
         {
-          "id": "sensevoice_asr",
+          "id": "asr",
           "name": "AsrSenseVoice",
           "params": {
             "model_path": "model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.onnx",
             "tokens_path": "model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt",
-            "feature_input_key": "fbank",
             "language": "auto",
             "use_itn": true,
             "detect_emotion": true,
             "sample_rate": 16000,
             "execution_provider": "cpu",
             "num_threads": 4
-          },
-          "depends_on": ["fbank"]
+          }
         }
       ]
     }

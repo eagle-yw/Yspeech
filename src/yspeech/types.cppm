@@ -184,6 +184,7 @@ export struct EngineEvent {
 export struct OperatorTiming {
     std::string op_id;
     double total_time_ms = 0.0;
+    double active_wall_time_ms = 0.0;
     double min_time_ms = std::numeric_limits<double>::max();
     double max_time_ms = 0.0;
     double avg_time_ms = 0.0;
@@ -193,6 +194,7 @@ export struct OperatorTiming {
     double effective_avg_time_ms = 0.0;
     std::vector<double> recent_times_ms;
     std::vector<double> effective_recent_times_ms;
+    std::vector<std::pair<double, double>> active_intervals_ms;
     
     void record(double time_ms, std::size_t history_size = 100) {
         total_time_ms += time_ms;
@@ -222,6 +224,32 @@ export struct OperatorTiming {
             if (effective_recent_times_ms.size() > history_size) {
                 effective_recent_times_ms.erase(effective_recent_times_ms.begin());
             }
+        }
+    }
+
+    void record_active_window(double start_ms, double end_ms) {
+        if (!(end_ms > start_ms)) {
+            return;
+        }
+
+        active_intervals_ms.emplace_back(start_ms, end_ms);
+        std::sort(active_intervals_ms.begin(), active_intervals_ms.end());
+
+        std::vector<std::pair<double, double>> merged;
+        merged.reserve(active_intervals_ms.size());
+
+        for (const auto& interval : active_intervals_ms) {
+            if (merged.empty() || interval.first > merged.back().second) {
+                merged.push_back(interval);
+            } else {
+                merged.back().second = std::max(merged.back().second, interval.second);
+            }
+        }
+
+        active_intervals_ms = std::move(merged);
+        active_wall_time_ms = 0.0;
+        for (const auto& interval : active_intervals_ms) {
+            active_wall_time_ms += interval.second - interval.first;
         }
     }
     
@@ -309,6 +337,13 @@ export struct ProcessingStats {
         }
         operator_timings[op_id].record_effective_sample(time_ms, history_size);
     }
+
+    void record_operator_active_window(const std::string& op_id, double start_ms, double end_ms) {
+        if (operator_timings.find(op_id) == operator_timings.end()) {
+            operator_timings[op_id] = OperatorTiming{.op_id = op_id};
+        }
+        operator_timings[op_id].record_active_window(start_ms, end_ms);
+    }
     
     std::string to_string() const {
         std::string result = "=== Performance Summary ===\n";
@@ -353,12 +388,16 @@ export struct ProcessingStats {
         if (!operator_timings.empty()) {
             result += "\nOperator Performance:\n";
             result += "┌─────────────────┬──────────┬──────────┬───────┬───────┬──────────┬──────────┬──────────┬─────────┐\n";
-            result += "│ Operator        │ Total    │ Avg      │ Calls │ Exec  │ P50      │ P95      │ P99      │ % Total │\n";
+            result += "│ Operator        │ Total    │ Avg      │ Calls │ Exec  │ P50      │ P95      │ P99      │ % Task  │\n";
             result += "├─────────────────┼──────────┼──────────┼───────┼───────┼──────────┼──────────┼──────────┼─────────┤\n";
             
             for (const auto& [id, timing] : operator_timings) {
-                double percent = (total_processing_time_ms > 0.0) 
-                    ? (timing.total_time_ms / total_processing_time_ms * 100.0) 
+                const double task_share_basis_ms =
+                    timing.active_wall_time_ms > 0.0
+                        ? timing.active_wall_time_ms
+                        : std::min(timing.total_time_ms, total_processing_time_ms);
+                double percent = (total_processing_time_ms > 0.0)
+                    ? (task_share_basis_ms / total_processing_time_ms * 100.0)
                     : 0.0;
                 
                 const bool use_effective_percentiles = !timing.effective_recent_times_ms.empty();
@@ -379,7 +418,7 @@ export struct ProcessingStats {
                     std::size_t idx = static_cast<std::size_t>(sorted.size() * 0.99);
                     return sorted[std::min(idx, sorted.size() - 1)];
                 }() : timing.p99();
-                const double display_avg_ms = timing.effective_call_count > 0
+                const double display_avg_ms = (timing.effective_call_count > 0 && timing.effective_total_time_ms > 0.0)
                     ? timing.effective_avg_time_ms
                     : timing.avg_time_ms;
 

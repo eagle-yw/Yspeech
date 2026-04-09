@@ -10,7 +10,7 @@ namespace {
 struct DemoOptions {
     std::string config_file = "examples/configs/streaming_paraformer_asr.json";
     std::string audio_file = "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav";
-    double playback_rate = 1.0;
+    double playback_rate = 0.0;
     bool enable_event_queue = true;
     std::optional<std::string> execution_provider_override;
     std::optional<bool> coreml_ane_only_override;
@@ -29,6 +29,7 @@ void print_help(const char* program) {
     std::println("  config         配置文件路径");
     std::println("  audio          音频文件路径");
     std::println("  playback_rate  音频推送倍率，1.0 为实时，20 为 20 倍速");
+    std::println("                 默认配置是单线流式 ASR，默认倍率为 0.0");
     std::println("");
     std::println("选项:");
     std::println("  --queue <bool>        显式设置 internal event queue");
@@ -41,21 +42,21 @@ void print_help(const char* program) {
 
 auto parse_args(int argc, char* argv[]) -> DemoOptions {
     DemoOptions opts;
-    if (argc > 1) {
-        opts.config_file = argv[1];
-    }
-    if (argc > 2) {
-        opts.audio_file = argv[2];
-    }
-    if (argc > 3) {
-        opts.playback_rate = std::stod(argv[3]);
-    }
+    int positional_index = 0;
 
-    for (int i = 4; i < argc; ++i) {
+    for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--help") {
             print_help(argv[0]);
             std::exit(0);
+        }
+        if (arg == "--config" && i + 1 < argc) {
+            opts.config_file = argv[++i];
+            continue;
+        }
+        if (arg == "--audio" && i + 1 < argc) {
+            opts.audio_file = argv[++i];
+            continue;
         }
         if (arg == "--quiet") {
             opts.quiet = true;
@@ -85,7 +86,18 @@ auto parse_args(int argc, char* argv[]) -> DemoOptions {
             opts.coreml_ane_only_override = parse_bool_flag(argv[++i]);
             continue;
         }
-
+        if (!arg.empty() && arg[0] != '-') {
+            if (positional_index == 0) {
+                opts.config_file = arg;
+            } else if (positional_index == 1) {
+                opts.audio_file = arg;
+            } else if (positional_index == 2) {
+                opts.playback_rate = std::stod(arg);
+            }
+            ++positional_index;
+            continue;
+        }
+        throw std::invalid_argument(std::format("Unknown argument: {}", arg));
     }
 
     if (opts.benchmark_runs > 0) {
@@ -104,6 +116,103 @@ struct EffectiveConfig {
     std::string path;
     bool temporary = false;
 };
+
+enum class DemoProfileKind {
+    StreamingLinearAsr,
+    StreamingDagAsr,
+    StreamingVadOnly,
+    UnsupportedOffline,
+    UnsupportedOther
+};
+
+struct DemoConfigProfile {
+    std::string name = "unknown";
+    std::string task = "asr";
+    std::string mode = "streaming";
+    DemoProfileKind kind = DemoProfileKind::UnsupportedOther;
+    bool uses_multi_path_graph = false;
+    bool has_asr = false;
+    bool has_vad = false;
+};
+
+auto inspect_demo_config(const std::string& config_path) -> DemoConfigProfile {
+    std::ifstream in(config_path);
+    if (!in.is_open()) {
+        throw std::runtime_error(std::format("Failed to open config: {}", config_path));
+    }
+
+    nlohmann::json config;
+    in >> config;
+
+    DemoConfigProfile profile;
+    profile.name = config.value("name", profile.name);
+    profile.task = config.value("task", profile.task);
+    profile.mode = config.value("mode", profile.mode);
+
+    if (config.contains("pipelines") && config["pipelines"].is_array()) {
+        for (const auto& stage : config["pipelines"]) {
+            if (stage.contains("depends_on") && stage["depends_on"].is_array() && !stage["depends_on"].empty()) {
+                profile.uses_multi_path_graph = true;
+            }
+            if (!stage.contains("ops") || !stage["ops"].is_array()) {
+                continue;
+            }
+            for (const auto& op : stage["ops"]) {
+                if (!op.contains("name") || !op["name"].is_string()) {
+                    continue;
+                }
+                const auto op_name = op["name"].get<std::string>();
+                if (op_name == "SileroVad") {
+                    profile.has_vad = true;
+                }
+                if (op_name == "AsrParaformer" || op_name == "AsrSenseVoice" || op_name == "AsrWhisper") {
+                    profile.has_asr = true;
+                }
+            }
+        }
+    }
+
+    if (profile.mode == "offline") {
+        profile.kind = DemoProfileKind::UnsupportedOffline;
+    } else if (profile.task == "vad" && profile.has_vad && !profile.has_asr) {
+        profile.kind = DemoProfileKind::StreamingVadOnly;
+    } else if (profile.mode == "streaming" && profile.has_asr) {
+        profile.kind = profile.uses_multi_path_graph
+            ? DemoProfileKind::StreamingDagAsr
+            : DemoProfileKind::StreamingLinearAsr;
+    }
+
+    return profile;
+}
+
+void validate_demo_profile(const DemoConfigProfile& profile) {
+    if (profile.kind == DemoProfileKind::UnsupportedOffline) {
+        throw std::invalid_argument(
+            "streaming_demo 只接受 streaming 配置；offline 配置请使用 simple_transcribe 或 transcribe_tool"
+        );
+    }
+    if (profile.kind == DemoProfileKind::UnsupportedOther) {
+        throw std::invalid_argument(
+            "streaming_demo 当前只支持 streaming ASR 或 VAD-only 配置"
+        );
+    }
+}
+
+auto profile_label(const DemoConfigProfile& profile) -> std::string {
+    switch (profile.kind) {
+    case DemoProfileKind::StreamingLinearAsr:
+        return "Streaming Linear ASR";
+    case DemoProfileKind::StreamingDagAsr:
+        return "Streaming DAG ASR";
+    case DemoProfileKind::StreamingVadOnly:
+        return "Streaming VAD Only";
+    case DemoProfileKind::UnsupportedOffline:
+        return "Unsupported Offline";
+    case DemoProfileKind::UnsupportedOther:
+        return "Unsupported";
+    }
+    return "Unsupported";
+}
 
 auto build_effective_config(const DemoOptions& opts) -> EffectiveConfig {
     if (!opts.execution_provider_override.has_value() && !opts.coreml_ane_only_override.has_value()) {
@@ -151,6 +260,8 @@ auto build_effective_config(const DemoOptions& opts) -> EffectiveConfig {
 }
 
 auto run_once(const DemoOptions& opts, bool verbose) -> RunResult {
+    const auto profile = inspect_demo_config(opts.config_file);
+    validate_demo_profile(profile);
     const auto effective_config = build_effective_config(opts);
 
     yspeech::EngineConfigOptions engine_opts;
@@ -172,7 +283,7 @@ auto run_once(const DemoOptions& opts, bool verbose) -> RunResult {
     std::string rendered_transcript;
     std::string last_block_text;
     bool inline_partial_visible = false;
-
+    bool stream_final_printed = false;
     auto normalize_text = [](std::string text) {
         auto not_space = [](unsigned char ch) {
             return !std::isspace(ch);
@@ -183,6 +294,10 @@ auto run_once(const DemoOptions& opts, bool verbose) -> RunResult {
             return std::string{};
         }
         return std::string(begin, end);
+    };
+
+    auto merge_partial_with_prefix = [&](const std::string& partial_text) {
+        return partial_text;
     };
 
     asr.on_event([&](const yspeech::EngineEvent& event) {
@@ -234,16 +349,17 @@ auto run_once(const DemoOptions& opts, bool verbose) -> RunResult {
 
         if (event.kind == yspeech::EngineEventKind::ResultPartial) {
             std::lock_guard lock(transcript_mutex);
-            if (text == latest_partial || text == latest_segment_final || text == final_transcript) {
+            auto merged_text = merge_partial_with_prefix(text);
+            if (merged_text == latest_partial || merged_text == latest_segment_final || merged_text == final_transcript) {
                 return;
             }
 
-            latest_partial = text;
-            std::string padded = text;
+            latest_partial = merged_text;
+            std::string padded = merged_text;
             if (rendered_transcript.size() > padded.size()) {
                 padded.append(rendered_transcript.size() - padded.size(), ' ');
             }
-            rendered_transcript = text;
+            rendered_transcript = merged_text;
             inline_partial_visible = true;
             std::print("\r\033[2K[实时转写] {}", padded);
             std::cout.flush();
@@ -294,6 +410,7 @@ auto run_once(const DemoOptions& opts, bool verbose) -> RunResult {
                 if (should_print) {
                     last_block_text = text;
                 }
+                stream_final_printed = true;
             }
             if (!should_print) {
                 return;
@@ -311,10 +428,21 @@ auto run_once(const DemoOptions& opts, bool verbose) -> RunResult {
 
     asr.on_status([&](const std::string& status) {
         if (verbose) {
-            std::lock_guard lock(transcript_mutex);
-            if (inline_partial_visible) {
-                std::print("\n");
-                inline_partial_visible = false;
+            std::string fallback_stream_final;
+            {
+                std::lock_guard lock(transcript_mutex);
+                if (inline_partial_visible) {
+                    std::print("\n");
+                    inline_partial_visible = false;
+                }
+                if (status == "stream_drained" && !stream_final_printed && !final_transcript.empty()) {
+                    fallback_stream_final = final_transcript;
+                    stream_final_printed = true;
+                    last_block_text = final_transcript;
+                }
+            }
+            if (!fallback_stream_final.empty()) {
+                std::print("[流最终] {}\n", fallback_stream_final);
             }
             std::print("[状态] {}\n", status);
         }
@@ -336,7 +464,11 @@ auto run_once(const DemoOptions& opts, bool verbose) -> RunResult {
     });
 
     if (verbose) {
-        std::print("开始流式识别...\n");
+        if (profile.kind == DemoProfileKind::StreamingVadOnly) {
+            std::print("开始流式 VAD 检测...\n");
+        } else {
+            std::print("开始流式识别...\n");
+        }
     }
     asr.start();
     asr.finish();
@@ -413,22 +545,35 @@ int main(int argc, char* argv[]) {
 
     const auto opts = parse_args(argc, argv);
 
-    std::print("配置文件: {}\n", opts.config_file);
-    std::print("音频文件: {}\n", opts.audio_file);
-    std::print("source.playback_rate: {}\n", opts.playback_rate);
-    std::print("engine.enable_event_queue: {}\n", opts.enable_event_queue ? "true" : "false");
-    if (opts.execution_provider_override.has_value()) {
-        std::print("override.execution_provider: {}\n", *opts.execution_provider_override);
-    }
-    if (opts.coreml_ane_only_override.has_value()) {
-        std::print("override.coreml_ane_only: {}\n", *opts.coreml_ane_only_override ? "true" : "false");
-    }
-    if (opts.benchmark_runs > 0) {
-        std::print("benchmark.runs: {}\n", opts.benchmark_runs);
-    }
-    std::print("\n");
-
     try {
+        const auto profile = inspect_demo_config(opts.config_file);
+        validate_demo_profile(profile);
+
+        std::print("配置文件: {}\n", opts.config_file);
+        std::print("配置名称: {}\n", profile.name);
+        std::print("配置画像: {}\n", profile_label(profile));
+        std::print("config.mode: {}\n", profile.mode);
+        std::print("config.task: {}\n", profile.task);
+        std::print("音频文件: {}\n", opts.audio_file);
+        std::print("source.playback_rate: {}\n", opts.playback_rate);
+        std::print("engine.enable_event_queue: {}\n", opts.enable_event_queue ? "true" : "false");
+        if (profile.kind == DemoProfileKind::StreamingDagAsr) {
+            std::print("说明: 该配置会走静态 DAG 路径，用于验证 branch/join。\n");
+        }
+        if (profile.kind == DemoProfileKind::StreamingVadOnly) {
+            std::print("说明: 该配置只输出 VAD 事件，不会产生 ASR 文本。\n");
+        }
+        if (opts.execution_provider_override.has_value()) {
+            std::print("override.execution_provider: {}\n", *opts.execution_provider_override);
+        }
+        if (opts.coreml_ane_only_override.has_value()) {
+            std::print("override.coreml_ane_only: {}\n", *opts.coreml_ane_only_override ? "true" : "false");
+        }
+        if (opts.benchmark_runs > 0) {
+            std::print("benchmark.runs: {}\n", opts.benchmark_runs);
+        }
+        std::print("\n");
+
         if (opts.benchmark_runs <= 0) {
             auto result = run_once(opts, !opts.quiet);
             if (!opts.quiet && !result.final_text.empty()) {

@@ -2,8 +2,8 @@
 #include <nlohmann/json.hpp>
 #include <fstream>
 
-import yspeech.context;
-import yspeech.op.vad.silero;
+import yspeech.domain.vad.base;
+import yspeech.domain.vad.silero;
 
 using namespace yspeech;
 
@@ -18,13 +18,12 @@ TEST(TestSileroVadSimple, BasicInit) {
         GTEST_SKIP() << "Model file not found: model/vad/silero_vad.onnx";
     }
 
-    OpSileroVad vad;
+    auto vad = VadCoreFactory::get_instance().create_core("SileroVad");
     nlohmann::json config;
     config["model_path"] = "model/vad/silero_vad.onnx";
     config["threshold"] = 0.5f;
     config["sample_rate"] = 16000;
-    config["input_buffer_key"] = "audio_planar";
-    config["output_key"] = "vad";
 
-    EXPECT_NO_THROW(vad.init(config));
+    EXPECT_NO_THROW(vad->init(config));
+    vad->deinit();
 }

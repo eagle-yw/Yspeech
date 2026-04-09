@@ -3,22 +3,18 @@ module;
 #include <nlohmann/json.hpp>
 #include <onnxruntime_cxx_api.h>
 
-export module yspeech.op.vad.silero;
+export module yspeech.domain.vad.silero;
 
 import std;
-import yspeech.context;
 import yspeech.error;
-import yspeech.op;
-import yspeech.op.ort_symbol_lookup;
+import yspeech.domain.vad.base;
+import yspeech.onnx.ort_symbol_lookup;
 import yspeech.log;
-import yspeech.frame_ring;
-import yspeech.stream_store;
 import yspeech.types;
-import yspeech.data_keys;
 
 namespace yspeech {
 
-export class OpSileroVad {
+export class SileroVadCore : public VadCoreIface {
 public:
     static constexpr int WINDOW_SIZE = 512;
     static constexpr int SAMPLE_RATE = 16000;
@@ -26,70 +22,25 @@ public:
     static constexpr int MIN_SPEECH_DURATION_MS = 250;
     static constexpr int MIN_SILENCE_DURATION_MS = 100;
 
-    OpSileroVad() = default;
-
-    OpSileroVad(const OpSileroVad&) = delete;
-    OpSileroVad& operator=(const OpSileroVad&) = delete;
-    OpSileroVad(OpSileroVad&&) noexcept = default;
-    OpSileroVad& operator=(OpSileroVad&&) noexcept = default;
-
-    void init(const nlohmann::json& config) {
+    void init(const nlohmann::json& config) override {
         try {
             validate_and_load_config(config);
             init_onnx_session();
             reset_state();
 
-            log_info("OpSileroVad initialized: model={}, threshold={}, sample_rate={}",
+            log_info("SileroVadCore initialized: model={}, threshold={}, sample_rate={}",
                      model_path_, threshold_, sample_rate_);
         } catch (const std::exception& e) {
-            log_error("OpSileroVad initialization failed: {}", e.what());
+            log_error("SileroVadCore initialization failed: {}", e.what());
             deinit();
             throw;
         }
     }
 
-    bool ready(Context&, StreamStore& store) {
-        return store.has_unread(input_frame_key_, reader_key_) ||
-               pending_samples_.size() >= WINDOW_SIZE ||
-               eos_seen_;
-    }
+    auto process_samples(std::span<const float> samples, bool eos = false) -> SileroVadChunkResult override {
+        pending_samples_.insert(pending_samples_.end(), samples.begin(), samples.end());
 
-    StreamProcessResult process_stream(Context& ctx, StreamStore& store) {
-        bool saw_eos = false;
-        std::size_t consumed = 0;
-
-        while (true) {
-            auto read_result = store.read_frame(input_frame_key_, reader_key_);
-            if (read_result.status == FrameReadStatus::Empty) {
-                break;
-            }
-            if (read_result.status == FrameReadStatus::Overrun) {
-                log_warn("VAD reader '{}' overrun: requested_seq={}, oldest_available_seq={}",
-                         reader_key_, read_result.requested_seq, read_result.oldest_available_seq);
-                store.seek_reader_to_oldest(input_frame_key_, reader_key_);
-                return StreamProcessResult{
-                    .status = StreamProcessStatus::OverrunRecovered,
-                    .wake_downstream = false
-                };
-            }
-
-            auto frame = read_result.frame;
-            if (frame) {
-                ++consumed;
-                if (!frame->gap && !frame->samples.empty()) {
-                    pending_samples_.insert(
-                        pending_samples_.end(),
-                        frame->samples.begin(),
-                        frame->samples.end()
-                    );
-                }
-                if (frame->eos || read_result.status == FrameReadStatus::Eof) {
-                    saw_eos = true;
-                }
-            }
-        }
-
-        bool produced = false;
+        SileroVadChunkResult result;
         while (pending_samples_.size() >= WINDOW_SIZE) {
             std::vector<float> audio_chunk(
                 pending_samples_.begin(),
@@ -99,85 +50,80 @@ public:
                 pending_samples_.begin(),
                 pending_samples_.begin() + WINDOW_SIZE
             );
-            process_chunk(ctx, audio_chunk);
-            produced = true;
+            auto chunk = process_window(audio_chunk);
+            result.probability = chunk.probability;
+            result.is_speech = chunk.is_speech;
+            result.current_start_ms = chunk.current_start_ms;
+            result.current_end_ms = chunk.current_end_ms;
+            result.finished_segments.insert(
+                result.finished_segments.end(),
+                chunk.finished_segments.begin(),
+                chunk.finished_segments.end()
+            );
         }
 
-        if (saw_eos) {
-            eos_seen_ = true;
+        if (eos) {
             if (!pending_samples_.empty()) {
                 std::vector<float> audio_chunk = pending_samples_;
                 audio_chunk.resize(WINDOW_SIZE, 0.0f);
                 pending_samples_.clear();
-                process_chunk(ctx, audio_chunk);
-                produced = true;
+                auto chunk = process_window(audio_chunk);
+                result.probability = chunk.probability;
+                result.is_speech = chunk.is_speech;
+                result.current_start_ms = chunk.current_start_ms;
+                result.current_end_ms = chunk.current_end_ms;
+                result.finished_segments.insert(
+                    result.finished_segments.end(),
+                    chunk.finished_segments.begin(),
+                    chunk.finished_segments.end()
+                );
             }
-            finalize_segment_on_eos(ctx);
-            produced = true;
-            eos_seen_ = false;
+            if (auto final_segment = finalize_segment_on_eos(); final_segment.has_value()) {
+                result.finished_segments.push_back(*final_segment);
+                result.current_end_ms = final_segment->end_ms;
+                result.is_speech = false;
+            }
         }
 
-        return StreamProcessResult{
-            .status = produced ? StreamProcessStatus::ProducedOutput :
-                      consumed > 0 ? StreamProcessStatus::ConsumedInput :
-                                     StreamProcessStatus::NeedMoreInput,
-            .consumed_frames = consumed,
-            .produced_items = produced ? 1u : 0u,
-            .wake_downstream = produced
-        };
+        if (result.current_start_ms == 0 && result.current_end_ms == 0) {
+            result.current_start_ms = static_cast<std::int64_t>(current_segment_start_ms_);
+            result.current_end_ms = static_cast<std::int64_t>(current_segment_end_ms_);
+            result.probability = last_probability_;
+            result.is_speech = is_speech_;
+        }
+
+        return result;
     }
 
-    StreamProcessResult flush(Context& ctx, StreamStore&) {
-        if (!eos_seen_ && pending_samples_.empty() && !is_speech_) {
-            return {};
-        }
-        if (!pending_samples_.empty()) {
-            std::vector<float> audio_chunk = pending_samples_;
-            audio_chunk.resize(WINDOW_SIZE, 0.0f);
-            pending_samples_.clear();
-            process_chunk(ctx, audio_chunk);
-        }
-        finalize_segment_on_eos(ctx);
-        eos_seen_ = false;
-        return StreamProcessResult{
-            .status = StreamProcessStatus::StreamFinalized,
-            .wake_downstream = true
-        };
-    }
-
-    void deinit() {
+    void deinit() override {
         session_.reset();
         env_.reset();
-        memory_info_ = Ort::MemoryInfo{nullptr};
     }
 
     bool is_speech() const { return is_speech_; }
-    float current_probability() const { return last_probability_; }
+    float current_probability() const override { return last_probability_; }
 
 private:
     void validate_and_load_config(const nlohmann::json& config) {
         if (!config.contains("model_path")) {
-            throw std::invalid_argument("OpSileroVad: 'model_path' is required in config");
+            throw std::invalid_argument("SileroVadCore: 'model_path' is required in config");
         }
         model_path_ = config["model_path"].get<std::string>();
 
         if (config.contains("threshold")) {
             threshold_ = config["threshold"].get<float>();
             if (threshold_ < 0.0f || threshold_ > 1.0f) {
-                throw std::invalid_argument("OpSileroVad: 'threshold' must be between 0.0 and 1.0");
+                throw std::invalid_argument("SileroVadCore: 'threshold' must be between 0.0 and 1.0");
             }
         }
 
         if (config.contains("sample_rate")) {
             sample_rate_ = config["sample_rate"].get<int>();
             if (sample_rate_ != 8000 && sample_rate_ != 16000) {
-                throw std::invalid_argument("OpSileroVad: 'sample_rate' must be 8000 or 16000");
+                throw std::invalid_argument("SileroVadCore: 'sample_rate' must be 8000 or 16000");
             }
         }
 
-        if (config.contains("input_frame_key")) {
-            input_frame_key_ = config["input_frame_key"].get<std::string>();
-        }
         if (config.contains("execution_provider")) {
             auto ep = config["execution_provider"].get<std::string>();
             std::ranges::transform(ep, ep.begin(), [](unsigned char c) {
@@ -197,30 +143,17 @@ private:
             coreml_flags_ = config["coreml_flags"].get<std::uint32_t>();
         }
 
-        if (config.contains("output_key")) {
-            output_key_ = config["output_key"].get<std::string>();
-        }
-        if (config.contains("__op_id")) {
-            operator_id_ = config["__op_id"].get<std::string>();
-        } else {
-            operator_id_ = output_key_;
-        }
-        reader_key_ = output_key_ + "_reader";
-        if (config.contains("reader_key")) {
-            reader_key_ = config["reader_key"].get<std::string>();
-        }
-
         if (config.contains("min_speech_duration_ms")) {
             min_speech_duration_ms_ = config["min_speech_duration_ms"].get<int>();
             if (min_speech_duration_ms_ < 0) {
-                throw std::invalid_argument("OpSileroVad: 'min_speech_duration_ms' must be non-negative");
+                throw std::invalid_argument("SileroVadCore: 'min_speech_duration_ms' must be non-negative");
             }
         }
 
         if (config.contains("min_silence_duration_ms")) {
             min_silence_duration_ms_ = config["min_silence_duration_ms"].get<int>();
             if (min_silence_duration_ms_ < 0) {
-                throw std::invalid_argument("OpSileroVad: 'min_silence_duration_ms' must be non-negative");
+                throw std::invalid_argument("SileroVadCore: 'min_silence_duration_ms' must be non-negative");
             }
         }
     }
@@ -239,16 +172,12 @@ private:
 
         discover_model_io();
         validate_model_io();
-
-        log_info("ONNX session created for {}", model_path_);
     }
 
     void discover_model_io() {
         Ort::AllocatorWithDefaultOptions allocator;
 
         size_t num_inputs = session_->GetInputCount();
-        log_debug("Model has {} inputs:", num_inputs);
-
         for (size_t i = 0; i < num_inputs; ++i) {
             auto name = session_->GetInputNameAllocated(i, allocator);
             auto type_info = session_->GetInputTypeInfo(i);
@@ -257,9 +186,6 @@ private:
 
             std::string name_str(name.get());
             input_names_.push_back(name_str);
-
-            std::string shape_str = shape_to_string(shape);
-            log_debug("  Input {}: name='{}', shape=[{}]", i, name_str, shape_str);
 
             if (name_str == "x" || name_str == "input") {
                 audio_input_idx_ = static_cast<int>(i);
@@ -275,8 +201,6 @@ private:
         }
 
         size_t num_outputs = session_->GetOutputCount();
-        log_debug("Model has {} outputs:", num_outputs);
-
         for (size_t i = 0; i < num_outputs; ++i) {
             auto name = session_->GetOutputNameAllocated(i, allocator);
             auto type_info = session_->GetOutputTypeInfo(i);
@@ -285,9 +209,6 @@ private:
 
             std::string name_str(name.get());
             output_names_.push_back(name_str);
-
-            std::string shape_str = shape_to_string(shape);
-            log_debug("  Output {}: name='{}', shape=[{}]", i, name_str, shape_str);
 
             if (name_str == "prob" || name_str == "output" || name_str.find("prob") != std::string::npos) {
                 prob_output_idx_ = static_cast<int>(i);
@@ -304,20 +225,7 @@ private:
         }
     }
 
-    std::string shape_to_string(const std::vector<int64_t>& shape) {
-        std::string result;
-        for (size_t i = 0; i < shape.size(); ++i) {
-            if (shape[i] < 0) {
-                result += "dyn";
-            } else {
-                result += std::to_string(shape[i]);
-            }
-            if (i < shape.size() - 1) result += ",";
-        }
-        return result;
-    }
-
-    std::vector<int64_t> normalize_shape(const std::vector<int64_t>& shape) {
+    static auto normalize_shape(const std::vector<int64_t>& shape) -> std::vector<int64_t> {
         std::vector<int64_t> result;
         for (auto dim : shape) {
             result.push_back(dim < 0 ? 1 : dim);
@@ -325,32 +233,29 @@ private:
         return result;
     }
 
-    size_t compute_shape_size(const std::vector<int64_t>& shape) {
+    static auto compute_shape_size(const std::vector<int64_t>& shape) -> size_t {
         size_t size = 1;
         for (auto dim : shape) {
-            if (dim > 0) size *= static_cast<size_t>(dim);
+            if (dim > 0) {
+                size *= static_cast<size_t>(dim);
+            }
         }
         return size;
     }
 
     void validate_model_io() {
         if (audio_input_idx_ == -1) {
-            throw std::runtime_error("OpSileroVad: Could not find audio input (expected 'x' or 'input')");
+            throw std::runtime_error("SileroVadCore: Could not find audio input");
         }
         if (prob_output_idx_ == -1) {
-            throw std::runtime_error("OpSileroVad: Could not find probability output (expected 'prob' or 'output')");
+            throw std::runtime_error("SileroVadCore: Could not find probability output");
         }
-
         if (h_input_idx_ >= 0 && h_state_shape_.empty()) {
-            throw std::runtime_error("OpSileroVad: h state shape not determined");
+            throw std::runtime_error("SileroVadCore: h state shape not determined");
         }
         if (c_input_idx_ >= 0 && c_state_shape_.empty()) {
-            throw std::runtime_error("OpSileroVad: c state shape not determined");
+            throw std::runtime_error("SileroVadCore: c state shape not determined");
         }
-
-        log_info("Model I/O mapping: audio_input_idx={}, h_idx={}, c_idx={}, sr_idx={}, prob_idx={}, h_out_idx={}, c_out_idx={}",
-                 audio_input_idx_, h_input_idx_, c_input_idx_, sr_input_idx_,
-                 prob_output_idx_, h_output_idx_, c_output_idx_);
     }
 
     void append_coreml_provider(Ort::SessionOptions& session_options) {
@@ -359,13 +264,13 @@ private:
         }
         std::uint32_t flags = coreml_flags_;
         if (coreml_ane_only_) {
-            flags |= 0x004; // COREML_FLAG_ONLY_ENABLE_DEVICE_WITH_ANE
+            flags |= 0x004;
         }
         using AppendCoreMLProviderFn = OrtStatus* (*)(OrtSessionOptions*, std::uint32_t);
         auto* append_coreml_provider = ort_detail::lookup_symbol_fn<AppendCoreMLProviderFn>(
             "OrtSessionOptionsAppendExecutionProvider_CoreML");
         if (append_coreml_provider == nullptr) {
-            log_warn("CoreML EP requested for silero_vad, but symbol 'OrtSessionOptionsAppendExecutionProvider_CoreML' is unavailable. Falling back to CPU.");
+            log_warn("CoreML EP requested for silero_vad, but symbol unavailable. Falling back to CPU.");
             return;
         }
         auto* status = append_coreml_provider(session_options, flags);
@@ -375,7 +280,6 @@ private:
             Ort::GetApi().ReleaseStatus(status);
             return;
         }
-        log_info("SileroVad using CoreML EP (flags={})", flags);
     }
 
     void reset_state() {
@@ -392,6 +296,7 @@ private:
         speech_duration_samples_ = 0;
         total_processed_samples_ = 0;
         reset_segment_state();
+        pending_samples_.clear();
     }
 
     void reset_segment_state() {
@@ -402,7 +307,7 @@ private:
         segment_finished_ = false;
     }
 
-    float infer(const std::vector<float>& audio_chunk) {
+    auto infer(const std::vector<float>& audio_chunk) -> float {
         std::vector<int64_t> input_shape = {1, static_cast<int64_t>(audio_chunk.size())};
         std::vector<int64_t> sr_shape = {1};
 
@@ -443,14 +348,12 @@ private:
 
         std::vector<const char*> output_names;
         std::vector<size_t> output_name_indices;
-
         auto add_output = [&](int idx, const std::string& name) {
             if (idx >= 0) {
                 output_names.push_back(name.c_str());
                 output_name_indices.push_back(static_cast<size_t>(idx));
             }
         };
-
         add_output(prob_output_idx_, prob_output_name_);
         add_output(h_output_idx_, h_output_name_);
         add_output(c_output_idx_, c_output_name_);
@@ -465,39 +368,22 @@ private:
         );
 
         float probability = 0.0f;
-
         for (size_t i = 0; i < outputs.size() && i < output_name_indices.size(); ++i) {
             int original_idx = static_cast<int>(output_name_indices[i]);
-
             if (original_idx == prob_output_idx_) {
                 float* output_data = outputs[i].GetTensorMutableData<float>();
                 if (output_data) {
-                    auto shape = outputs[i].GetTensorTypeAndShapeInfo().GetShape();
-                    if (!shape.empty() && shape[0] > 0) {
-                        probability = output_data[0];
-                    }
+                    probability = output_data[0];
                 }
             } else if (original_idx == h_output_idx_) {
                 float* new_h = outputs[i].GetTensorMutableData<float>();
                 if (new_h && !h_state_.empty()) {
-                    auto shape = outputs[i].GetTensorTypeAndShapeInfo().GetShape();
-                    size_t expected_size = compute_shape_size(shape);
-                    if (expected_size == h_state_.size()) {
-                        std::copy(new_h, new_h + h_state_.size(), h_state_.begin());
-                    } else {
-                        log_warn("VAD: h state size mismatch, expected {} but got {}", h_state_.size(), expected_size);
-                    }
+                    std::copy(new_h, new_h + h_state_.size(), h_state_.begin());
                 }
             } else if (original_idx == c_output_idx_) {
                 float* new_c = outputs[i].GetTensorMutableData<float>();
                 if (new_c && !c_state_.empty()) {
-                    auto shape = outputs[i].GetTensorTypeAndShapeInfo().GetShape();
-                    size_t expected_size = compute_shape_size(shape);
-                    if (expected_size == c_state_.size()) {
-                        std::copy(new_c, new_c + c_state_.size(), c_state_.begin());
-                    } else {
-                        log_warn("VAD: c state size mismatch, expected {} but got {}", c_state_.size(), expected_size);
-                    }
+                    std::copy(new_c, new_c + c_state_.size(), c_state_.begin());
                 }
             }
         }
@@ -505,30 +391,24 @@ private:
         return probability;
     }
 
-    void process_chunk(Context& ctx, const std::vector<float>& audio_chunk) {
-        const auto infer_start = std::chrono::steady_clock::now();
-        float probability = infer(audio_chunk);
-        const auto infer_end = std::chrono::steady_clock::now();
-        const auto infer_ms = std::chrono::duration<double, std::milli>(infer_end - infer_start).count();
-        ctx.record_operator_effective_sample(operator_id_, infer_ms);
-
+    auto process_window(const std::vector<float>& audio_chunk) -> SileroVadChunkResult {
+        SileroVadChunkResult result;
+        const float probability = infer(audio_chunk);
         update_state(probability, audio_chunk.size());
 
-        ctx.set(output_key_ + "_probability", probability);
-        ctx.set(output_key_ + "_is_speech", is_speech_);
-        ctx.set(output_key_ + "_current_start_ms", static_cast<std::int64_t>(current_segment_start_ms_));
-        ctx.set(output_key_ + "_current_end_ms", static_cast<std::int64_t>(current_segment_end_ms_));
-
-        if (!segment_finished_) {
-            log_debug("VAD inference: probability={:.3f}, is_speech={}", probability, is_speech_);
-            return;
+        result.probability = probability;
+        result.is_speech = is_speech_;
+        result.current_start_ms = static_cast<std::int64_t>(current_segment_start_ms_);
+        result.current_end_ms = static_cast<std::int64_t>(current_segment_end_ms_);
+        if (segment_finished_) {
+            result.finished_segments.push_back(emit_finished_segment());
         }
-        emit_finished_segment(ctx);
+        return result;
     }
 
-    void finalize_segment_on_eos(Context& ctx) {
+    auto finalize_segment_on_eos() -> std::optional<VadSegment> {
         if (!is_speech_) {
-            return;
+            return std::nullopt;
         }
 
         current_segment_end_sample_ = total_processed_samples_;
@@ -537,28 +417,17 @@ private:
         speech_duration_samples_ = 0;
         silence_duration_samples_ = 0;
         current_segment_end_ms_ = (static_cast<float>(current_segment_end_sample_) / sample_rate_) * 1000.0f;
-        emit_finished_segment(ctx);
+        return emit_finished_segment();
     }
 
-    void emit_finished_segment(Context& ctx) {
+    auto emit_finished_segment() -> VadSegment {
         VadSegment segment{
             .start_ms = static_cast<int64_t>(current_segment_start_ms_),
             .end_ms = static_cast<int64_t>(current_segment_end_ms_),
             .confidence = current_segment_confidence_
         };
-
-        std::vector<VadSegment> segments = ctx.get_or_default(
-            output_key_ + "_segments", std::vector<VadSegment>{});
-        segments.push_back(segment);
-        const auto segment_count = segments.size();
-        ctx.set(output_key_ + "_segments", std::move(segments));
-        ctx.set(output_key_ + "_last_segment", segment);
-        ctx.set(output_key_ + "_segment_count", segment_count);
-
-        log_info("VAD segment detected: [{}ms - {}ms], confidence={:.2f}",
-                 segment.start_ms, segment.end_ms, segment.confidence);
-
         reset_segment_state();
+        return segment;
     }
 
     void update_state(float probability, size_t samples_processed) {
@@ -583,21 +452,19 @@ private:
                 segment_sample_count_++;
             }
             is_speech_ = true;
-        } else {
-            if (is_speech_) {
-                silence_duration_samples_ += samples_processed;
+        } else if (is_speech_) {
+            silence_duration_samples_ += samples_processed;
 
-                int min_silence_samples = (min_silence_duration_ms_ * sample_rate_) / 1000;
-                int min_speech_samples = (min_speech_duration_ms_ * sample_rate_) / 1000;
+            int min_silence_samples = (min_silence_duration_ms_ * sample_rate_) / 1000;
+            int min_speech_samples = (min_speech_duration_ms_ * sample_rate_) / 1000;
 
-                if (silence_duration_samples_ >= static_cast<size_t>(min_silence_samples)) {
-                    if (speech_duration_samples_ >= static_cast<size_t>(min_speech_samples)) {
-                        current_segment_end_sample_ = total_processed_samples_ - silence_duration_samples_;
-                        segment_finished_ = true;
-                    }
-                    is_speech_ = false;
-                    speech_duration_samples_ = 0;
+            if (silence_duration_samples_ >= static_cast<size_t>(min_silence_samples)) {
+                if (speech_duration_samples_ >= static_cast<size_t>(min_speech_samples)) {
+                    current_segment_end_sample_ = total_processed_samples_ - silence_duration_samples_;
+                    segment_finished_ = true;
                 }
+                is_speech_ = false;
+                speech_duration_samples_ = 0;
             }
         }
 
@@ -608,17 +475,12 @@ private:
     std::string model_path_ = "silero_vad.onnx";
     float threshold_ = DEFAULT_THRESHOLD;
     int sample_rate_ = SAMPLE_RATE;
-    std::string input_frame_key_ = "audio_frames";
-    std::string reader_key_ = "vad_reader";
-    std::string output_key_ = "vad";
-    std::string operator_id_ = "vad";
     bool use_coreml_ = false;
     bool coreml_ane_only_ = false;
     std::uint32_t coreml_flags_ = 0;
     int min_speech_duration_ms_ = MIN_SPEECH_DURATION_MS;
     int min_silence_duration_ms_ = MIN_SILENCE_DURATION_MS;
     std::vector<float> pending_samples_;
-    bool eos_seen_ = false;
 
     std::unique_ptr<Ort::Env> env_;
     std::unique_ptr<Ort::Session> session_;
@@ -626,11 +488,9 @@ private:
 
     std::vector<std::string> input_names_;
     std::vector<std::string> output_names_;
-
     std::string prob_output_name_;
     std::string h_output_name_;
     std::string c_output_name_;
-
     int audio_input_idx_ = -1;
     int h_input_idx_ = -1;
     int c_input_idx_ = -1;
@@ -648,7 +508,6 @@ private:
 
     float last_probability_ = 0.0f;
     bool is_speech_ = false;
-
     size_t speech_start_sample_ = 0;
     size_t silence_duration_samples_ = 0;
     size_t speech_duration_samples_ = 0;
@@ -665,7 +524,7 @@ private:
 
 namespace {
 
-OperatorRegistrar<OpSileroVad> registrar("SileroVad");
+VadCoreRegistrar<SileroVadCore> silero_vad_core_registrar("SileroVad");
 
 }
 

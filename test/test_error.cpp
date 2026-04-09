@@ -5,20 +5,6 @@ import yspeech;
 
 namespace {
 
-struct TestErrorNoopOp {
-    void init(const nlohmann::json&) {
-    }
-
-    auto process_stream(yspeech::Context&, yspeech::StreamStore&) -> yspeech::StreamProcessResult {
-        return {
-            .status = yspeech::StreamProcessStatus::ProducedOutput,
-            .wake_downstream = true
-        };
-    }
-};
-
-yspeech::OperatorRegistrar<TestErrorNoopOp> test_error_noop_registrar("TestErrorNoopOp");
-
 } // namespace
 
 TEST(ErrorTest, ErrorCodeConversion) {
@@ -316,40 +302,46 @@ TEST(ContextTest, ErrorFilteringByComponent) {
 }
 
 TEST(PipelineIntegration, ConfigErrorHandling) {
-    yspeech::PipelineManager pipeline;
-    
-    EXPECT_THROW(pipeline.build("nonexistent.json"), std::exception);
-    EXPECT_FALSE(pipeline.has_build_errors());
-    EXPECT_TRUE(pipeline.build_errors().empty());
+    EXPECT_THROW(yspeech::Engine engine(std::string("nonexistent.json")), std::exception);
 }
 
 TEST(PipelineIntegration, ErrorRecoveryWithMetadata) {
-    yspeech::Context ctx;
-    yspeech::PipelineManager pipeline;
-    yspeech::StreamStore store;
-    
     nlohmann::json config = {
         {"name", "test_pipeline"},
         {"version", "1.0"},
+        {"task", "asr"},
+        {"mode", "streaming"},
+        {"frame", {
+            {"sample_rate", 16000},
+            {"channels", 1},
+            {"dur_ms", 10}
+        }},
+        {"stream", {
+            {"ring_capacity_frames", 8}
+        }},
+        {"source", {
+            {"type", "stream"}
+        }},
         {"pipelines", nlohmann::json::array({
             {
                 {"id", "stage1"},
                 {"ops", nlohmann::json::array({
                     {
                         {"id", "op1"},
-                        {"name", "TestErrorNoopOp"}
+                        {"name", "UnknownOp"}
                     }
                 })}
             }
         })}
     };
-    
-    pipeline.build(yspeech::PipelineConfig::from_json(config));
-    
-    EXPECT_FALSE(pipeline.has_build_errors());
-    
-    store.init_audio_ring("audio_frames", 8);
-    pipeline.run_stream(ctx, store, false);
-    
-    EXPECT_FALSE(ctx.has_errors());
+
+    EXPECT_NO_THROW({
+        auto pipeline_config = yspeech::PipelineConfig::from_json(config);
+        auto builder_config = yspeech::make_pipeline_builder_config(pipeline_config, config);
+        yspeech::RuntimeContext runtime;
+        runtime.config = config;
+        yspeech::SegmentRegistry registry;
+        yspeech::PipelineExecutor executor;
+        executor.configure(builder_config, runtime, registry);
+    });
 }

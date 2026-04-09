@@ -3,21 +3,21 @@ module;
 export module yspeech.aspect.logger;
 
 import std;
-import yspeech.context;
 import yspeech.aspect;
 import yspeech.log;
+import yspeech.runtime.runtime_context;
 
 namespace yspeech {
 
 export class LoggerAspect {
 public:
-    std::any before(Context& ctx, const std::string& op_name) {
-        log_debug("Entering operator: {}", op_name);
+    std::any before(RuntimeContext& runtime, const std::string& component_name) {
+        log_debug("Entering processing node: {}", component_name);
         return {};
     }
 
-    void after(Context& ctx, const std::string& op_name, std::any payload) {
-        log_debug("Exiting operator: {}", op_name);
+    void after(RuntimeContext& runtime, const std::string& component_name, std::any payload) {
+        log_debug("Exiting processing node: {}", component_name);
     }
 };
 

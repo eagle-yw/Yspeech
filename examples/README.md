@@ -38,7 +38,7 @@ cmake --build build
 ./build/examples/streaming_demo \
   examples/configs/streaming_paraformer_asr.json \
   model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
-  1.0
+  0.0
 ```
 
 ```bash
@@ -46,6 +46,20 @@ cmake --build build
   examples/configs/streaming_sensevoice_asr.json \
   model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/test_wavs/zh.wav \
   1.0
+```
+
+```bash
+./build/examples/streaming_demo \
+  examples/configs/streaming_paraformer_asr_dag.json \
+  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  0.0
+```
+
+```bash
+./build/examples/streaming_demo \
+  examples/configs/streaming_paraformer_asr_dag_timeout.json \
+  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  0.0
 ```
 
 benchmark：
@@ -113,6 +127,15 @@ benchmark：
 - `--ane-only <0|1>`: 与 `--ep coreml` 搭配
 - `--quiet`: 减少过程输出
 
+配置触发行为：
+
+- `streaming_paraformer_asr.json`: 单线流式 ASR 主线
+- `streaming_paraformer_asr_dag.json`: 静态 DAG ASR 验证
+- `streaming_paraformer_asr_dag_timeout.json`: 静态 DAG + timeout 验证
+- `streaming_sensevoice_asr.json`: SenseVoice 线性流式变体
+- `vad_only.json`: 只输出 VAD 事件，不产生 ASR 文本
+- `offline_*.json`: `streaming_demo` 会直接拒绝，请改用 `simple_transcribe` 或 `transcribe_tool`
+
 ## 3. `transcribe_tool.cpp`
 
 面向“列出识别结果”的命令行工具。
@@ -141,6 +164,8 @@ benchmark：
 - `offline_sensevoice_asr.json`
 - `streaming_paraformer_asr.json`
 - `streaming_sensevoice_asr.json`
+- `streaming_paraformer_asr_dag.json`
+- `streaming_paraformer_asr_dag_timeout.json`
 
 可作为结构模板的配置：
 
