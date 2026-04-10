@@ -37,7 +37,12 @@ public:
 
         std::optional<KaldiFbankOutput> output;
         std::uint64_t stream_feature_version = 0;
-        std::vector<std::vector<float>> stream_feature_snapshot;
+        LocalFeatureChunkListPtr stream_feature_chunks;
+        LocalFeatureChunkListPtr delta_feature_chunks;
+        int stream_feature_count = 0;
+        int delta_feature_count = 0;
+        std::shared_ptr<const std::vector<std::vector<float>>> produced_chunk;
+        bool snapshot_changed = false;
         {
             std::scoped_lock lock(core_mutex_);
             auto& state = stream_states_[token.stream_id];
@@ -54,23 +59,38 @@ public:
             output = state.core->process_samples(std::span<const float>(token.audio), token.eos);
             after_aspects(runtime, std::move(aspect_payloads));
             apply_capabilities(post_capabilities_, runtime);
-            if (output.has_value() && !output->features.empty()) {
-                state.accumulated_features.insert(
-                    state.accumulated_features.end(),
-                    output->features.begin(),
-                    output->features.end()
+            if (output.has_value() && !output->delta_features.empty()) {
+                produced_chunk = std::make_shared<const std::vector<std::vector<float>>>(
+                    std::move(output->delta_features)
                 );
+                if (!state.feature_chunks) {
+                    state.feature_chunks = std::make_shared<LocalFeatureChunkList>();
+                } else if (state.feature_chunks.use_count() > 1) {
+                    state.feature_chunks = std::make_shared<LocalFeatureChunkList>(*state.feature_chunks);
+                }
+                state.feature_chunks->push_back(produced_chunk);
+                state.feature_count += static_cast<int>(produced_chunk->size());
                 state.feature_version = output->version;
+                delta_feature_count = output->delta_num_frames;
+                auto delta_chunks = std::make_shared<LocalFeatureChunkList>();
+                delta_chunks->push_back(produced_chunk);
+                delta_feature_chunks = std::move(delta_chunks);
+                snapshot_changed = true;
             }
             stream_feature_version = state.feature_version;
-            stream_feature_snapshot = state.accumulated_features;
+            stream_feature_count = state.feature_count;
+            if (snapshot_changed) {
+                stream_feature_chunks = state.feature_chunks;
+            }
         }
-        {
+        if (snapshot_changed) {
             std::scoped_lock lock(runtime.stream_feature_mutex);
             runtime.stream_feature_snapshots[token.stream_id] = RuntimeContext::StreamFeatureSnapshot{
-                .features = stream_feature_snapshot,
+                .chunks = stream_feature_chunks,
+                .delta_chunks = delta_feature_chunks,
                 .version = stream_feature_version,
-                .feature_count = static_cast<int>(stream_feature_snapshot.size())
+                .feature_count = stream_feature_count,
+                .delta_feature_count = delta_feature_count
             };
         }
         if (output.has_value()) {
@@ -98,8 +118,8 @@ public:
             }
         }
 
-        if (output.has_value() && !output->features.empty()) {
-            token.feature_frames.insert(token.feature_frames.end(), output->features.begin(), output->features.end());
+        if (produced_chunk && !produced_chunk->empty()) {
+            token.feature_frames.insert(token.feature_frames.end(), produced_chunk->begin(), produced_chunk->end());
         }
         token.feature_version = stream_feature_version;
         log_debug(
@@ -125,10 +145,15 @@ public:
     }
 
 private:
+    using LocalFeatureChunk = std::shared_ptr<const std::vector<std::vector<float>>>;
+    using LocalFeatureChunkList = std::vector<LocalFeatureChunk>;
+    using LocalFeatureChunkListPtr = std::shared_ptr<LocalFeatureChunkList>;
+
     struct StreamFeatureState {
         std::unique_ptr<FeatureCoreIface> core;
         bool initialized = false;
-        std::vector<std::vector<float>> accumulated_features;
+        LocalFeatureChunkListPtr feature_chunks = std::make_shared<LocalFeatureChunkList>();
+        int feature_count = 0;
         std::uint64_t feature_version = 0;
     };
 

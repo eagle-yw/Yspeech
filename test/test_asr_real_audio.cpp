@@ -20,6 +20,10 @@ bool streaming_config_exists() {
     return fs::exists("examples/configs/streaming_paraformer_asr.json");
 }
 
+bool streaming_incremental_config_exists() {
+    return fs::exists("examples/configs/streaming_paraformer_asr_incremental_decode.json");
+}
+
 bool offline_config_exists() {
     return fs::exists("examples/configs/offline_paraformer_asr.json");
 }
@@ -40,13 +44,17 @@ fs::path longer_audio_path() {
     return sample_audio_path();
 }
 
+constexpr std::string_view kExpectedParaformerStreamFinal =
+    "对我做了介绍啊那么我想说的是呢大家如果对我的研究感兴趣呢嗯";
+
 auto make_streaming_config(const std::string& audio_path) -> nlohmann::json {
     return nlohmann::json{
         {"name", "streaming_paraformer"},
         {"task", "asr"},
         {"mode", "streaming"},
         {"runtime", {
-            {"pipeline_lines", 2}
+            {"pipeline_lines", 2},
+            {"pipeline_name", "yspeech.taskflow.streaming"}
         }},
         {"frame", {
             {"sample_rate", 16000},
@@ -63,26 +71,44 @@ auto make_streaming_config(const std::string& audio_path) -> nlohmann::json {
         }},
         {"pipelines", {
             {
+                {"id", "source_stage"},
+                {"name", "Source Stage"},
+                {"ops", {{
+                    {"id", "source"},
+                    {"name", "FileSource"}
+                }}}
+            },
+            {
                 {"id", "vad_stage"},
+                {"name", "VAD Stage"},
+                {"depends_on", {"source_stage"}},
+                {"max_concurrency", 1},
                 {"ops", {{
                     {"id", "vad"},
                     {"name", "SileroVad"},
                     {"params", {
                         {"model_path", "model/vad/silero_vad.onnx"},
                         {"sample_rate", 16000},
-                        {"min_speech_duration_ms", 100},
-                        {"min_silence_duration_ms", 50}
+                        {"min_speech_duration_ms", 250},
+                        {"min_silence_duration_ms", 100}
                     }}
                 }}}
             },
             {
                 {"id", "feature_stage"},
+                {"name", "Feature Stage"},
+                {"depends_on", {"vad_stage"}},
+                {"max_concurrency", 2},
                 {"ops", {{
                     {"id", "fbank"},
                     {"name", "KaldiFbank"},
                     {"params", {
                         {"sample_rate", 16000},
                         {"num_bins", 80},
+                        {"frame_length_ms", 25},
+                        {"frame_shift_ms", 10},
+                        {"dither", 0},
+                        {"snip_edges", false},
                         {"lfr_window_size", 7},
                         {"lfr_window_shift", 6}
                     }}
@@ -90,6 +116,9 @@ auto make_streaming_config(const std::string& audio_path) -> nlohmann::json {
             },
             {
                 {"id", "asr_stage"},
+                {"name", "ASR Stage"},
+                {"depends_on", {"feature_stage"}},
+                {"max_concurrency", 2},
                 {"ops", {{
                     {"id", "asr"},
                     {"name", "AsrParaformer"},
@@ -97,12 +126,26 @@ auto make_streaming_config(const std::string& audio_path) -> nlohmann::json {
                         {"model_path", "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx"},
                         {"tokens_path", "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt"},
                         {"language", "zh"},
-                        {"min_new_feature_frames", 8}
+                        {"num_threads", 2},
+                        {"min_new_feature_frames", 20},
+                        {"min_first_partial_feature_frames", 10}
                     }}
                 }}}
             }
         }}
     };
+}
+
+auto make_streaming_incremental_decode_config(const std::string& audio_path) -> nlohmann::json {
+    auto config = make_streaming_config(audio_path);
+    config["name"] = "streaming_paraformer_incremental_decode";
+    for (auto& stage : config["pipelines"]) {
+        if (stage.contains("id") && stage["id"] == "asr_stage") {
+            auto& params = stage["ops"][0]["params"];
+            params["enable_incremental_decode"] = true;
+        }
+    }
+    return config;
 }
 
 auto make_streaming_branching_config(const std::string& audio_path) -> nlohmann::json {
@@ -281,6 +324,48 @@ void expect_streaming_pipeline_has_asr_events(const fs::path& audio_path) {
                event.kind == yspeech::EngineEventKind::ResultStreamFinal;
     });
     EXPECT_TRUE(has_asr_event);
+}
+
+auto run_streaming_pipeline_and_collect_events(const nlohmann::json& config) -> std::vector<yspeech::EngineEvent> {
+    yspeech::Engine engine(config);
+    std::vector<yspeech::EngineEvent> events;
+    engine.on_event([&](const yspeech::EngineEvent& event) {
+        events.push_back(event);
+    });
+
+    engine.start();
+    engine.finish();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!engine.input_eof_reached() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    engine.stop();
+    return events;
+}
+
+auto final_stream_text(const std::vector<yspeech::EngineEvent>& events) -> std::string {
+    for (auto it = events.rbegin(); it != events.rend(); ++it) {
+        if (it->kind == yspeech::EngineEventKind::ResultStreamFinal && it->asr.has_value()) {
+            return it->asr->text;
+        }
+    }
+    return {};
+}
+
+auto count_segments(const std::vector<yspeech::EngineEvent>& events) -> std::size_t {
+    return static_cast<std::size_t>(std::ranges::count_if(events, [](const yspeech::EngineEvent& event) {
+        return event.kind == yspeech::EngineEventKind::VadEnd;
+    }));
+}
+
+auto count_results(const std::vector<yspeech::EngineEvent>& events) -> std::size_t {
+    return static_cast<std::size_t>(std::ranges::count_if(events, [](const yspeech::EngineEvent& event) {
+        return event.kind == yspeech::EngineEventKind::ResultPartial ||
+               event.kind == yspeech::EngineEventKind::ResultSegmentFinal ||
+               event.kind == yspeech::EngineEventKind::ResultStreamFinal;
+    }));
 }
 
 void expect_streaming_branch_pipeline_has_asr_events(const fs::path& audio_path) {
@@ -515,6 +600,60 @@ TEST(TestAsrRealAudio, StreamingEnginePipelineConfigFileSmoke) {
                event.kind == yspeech::EngineEventKind::ResultStreamFinal;
     });
     EXPECT_TRUE(has_asr_event);
+}
+
+TEST(TestAsrRealAudio, StreamingEngineIncrementalDecodeConfigFileSmoke) {
+    const auto audio_path = sample_audio_path();
+    if (audio_path.empty() || !paraformer_assets_exist() || !streaming_incremental_config_exists()) {
+        GTEST_SKIP() << "Streaming incremental config-file assets not found";
+    }
+
+    yspeech::EngineConfigOptions options;
+    options.audio_path = audio_path.string();
+    options.playback_rate = 0.0;
+    yspeech::Engine engine(std::string("examples/configs/streaming_paraformer_asr_incremental_decode.json"), options);
+
+    std::vector<yspeech::EngineEvent> events;
+    engine.on_event([&](const yspeech::EngineEvent& event) { events.push_back(event); });
+
+    engine.start();
+    engine.finish();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!engine.input_eof_reached() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    engine.stop();
+
+    EXPECT_TRUE(engine.input_eof_reached());
+    EXPECT_FALSE(events.empty());
+    const auto final_text = final_stream_text(events);
+    EXPECT_EQ(final_text, kExpectedParaformerStreamFinal);
+    EXPECT_EQ(count_segments(events), 3);
+    EXPECT_EQ(count_results(events), 8);
+}
+
+TEST(TestAsrRealAudio, StreamingEngineIncrementalDecodeMatchesStableStreamFinal) {
+    const auto audio_path = sample_audio_path();
+    if (audio_path.empty() || !paraformer_assets_exist()) {
+        GTEST_SKIP() << "Streaming incremental-decode assets not found";
+    }
+
+    auto stable_events = run_streaming_pipeline_and_collect_events(make_streaming_config(audio_path.string()));
+    auto incremental_events =
+        run_streaming_pipeline_and_collect_events(make_streaming_incremental_decode_config(audio_path.string()));
+
+    ASSERT_FALSE(stable_events.empty());
+    ASSERT_FALSE(incremental_events.empty());
+
+    const auto stable_final = final_stream_text(stable_events);
+    const auto incremental_final = final_stream_text(incremental_events);
+
+    EXPECT_EQ(stable_final, kExpectedParaformerStreamFinal);
+    EXPECT_EQ(incremental_final, stable_final);
+    EXPECT_EQ(count_segments(incremental_events), count_segments(stable_events));
+    EXPECT_EQ(count_results(incremental_events), count_results(stable_events));
 }
 
 TEST(TestAsrRealAudio, StreamingEnginePipelineLongerAudioSmoke) {

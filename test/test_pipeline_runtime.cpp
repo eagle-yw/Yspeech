@@ -484,8 +484,11 @@ TEST(PipelineRuntime, FeatureStageBuildsSegmentFeatureData) {
         std::scoped_lock lock(runtime.stream_feature_mutex);
         auto it = runtime.stream_feature_snapshots.find("default");
         ASSERT_NE(it, runtime.stream_feature_snapshots.end());
-        EXPECT_FALSE(it->second.features.empty());
+        ASSERT_TRUE(it->second.chunks);
+        EXPECT_FALSE(it->second.chunks->empty());
         EXPECT_GT(it->second.version, 0u);
+        EXPECT_GT(it->second.feature_count, 0);
+        EXPECT_GT(it->second.delta_feature_count, 0);
     }
     EXPECT_FALSE(token.feature_frames.empty());
     EXPECT_GT(token.feature_version, 0u);

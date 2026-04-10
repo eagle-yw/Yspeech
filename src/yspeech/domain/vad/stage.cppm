@@ -107,6 +107,12 @@ public:
                 }
             }
             state->final_emitted = false;
+            {
+                std::scoped_lock runtime_lock(runtime.stream_segment_mutex);
+                auto& summary = runtime.stream_segment_summaries[token.stream_id];
+                summary.closed_segment_count += 1;
+                summary.last_segment = segment;
+            }
             token.segment_id = state->segment_id;
             token.vad_segment = segment;
             token.kind = PipelineTokenKind::SegmentFinal;
@@ -127,6 +133,12 @@ public:
                 token.segment_id = active->segment_id;
                 token.vad_segment = active->vad_segment;
                 token.kind = PipelineTokenKind::SegmentFinal;
+                {
+                    std::scoped_lock runtime_lock(runtime.stream_segment_mutex);
+                    auto& summary = runtime.stream_segment_summaries[token.stream_id];
+                    summary.closed_segment_count += 1;
+                    summary.last_segment = active->vad_segment;
+                }
             }
             registry.close_segment(*active_segment_id_, token.pts_end_ms);
             active_segment_id_.reset();

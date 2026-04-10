@@ -47,6 +47,64 @@
 
 `Capability` 不负责定义默认性能统计口径。运行时治理如果需要告警，优先复用引擎层已有告警链，而不是再让 capability 参与默认 Performance 统计。
 
+## Profiling 的两层结构
+
+接下来性能观测会明确拆成两层：
+
+1. `Core Performance`
+2. `Core Phase Performance`
+
+### 第一层：Core Performance
+
+这一层继续由 `TimerAspect` 提供，回答：
+
+- 哪个 core 最慢
+- 它在整次任务里占多少
+- 是调用太多，还是单次太慢
+
+### 第二层：Core Phase Performance
+
+这一层用于回答：
+
+- 这个热点 core 的时间具体花在哪里
+
+例如 `asr` 可以进一步拆成：
+
+- `pack_partial`
+- `run_partial`
+- `decode_partial`
+- `pack_final`
+- `run_final`
+- `decode_final`
+
+这一层不是由 `Capability` 直接测出来的，而是：
+
+- core 内部主动记录 phase 时间
+- 汇总进统一的 `core_phase_timings`
+- 再由 `streaming_demo`、导出模块或 capability 消费
+
+### 为什么不直接让 Capability 负责 Profiling
+
+因为 capability 只包在 `Stage -> Core` 前后，天然适合：
+
+- 打印
+- 上报
+- 告警
+
+但它看不到 core 内部的真实阶段边界，所以不适合直接承担默认 profiling 采样。
+
+因此默认原则是：
+
+- `Aspect` 负责边界总耗时
+- `Core` 负责内部 phase 耗时
+- `Capability` 负责消费这些 profiling 数据
+
+当前主线里，这一层已经能直接回答：
+
+- `asr` 的时间主要花在 `run`
+- `pack` 和 `decode` 占比很小
+- `run_final` 通常比 `run_partial` 更贵
+
 ### 总览表
 
 `Performance Summary` 现在分成两块：
@@ -228,6 +286,98 @@
 - `KaldiFbank.min_accumulated_frames`
 - `AsrParaformer.min_new_feature_frames`
 - `AsrSenseVoice.min_new_feature_frames`
+
+### 6. `AsrParaformer.min_new_feature_frames`
+
+这个参数主要控制：
+
+- 后续 `partial decode` 的触发频率
+- `run_partial` 的调用次数
+- `RTF`
+
+但它不应该孤立地看。调这个参数时，至少要同时观察：
+
+- `First Partial`
+- `First Final`
+- `RTF`
+- `Core Phase Performance` 中的：
+  - `asr/run_partial`
+  - `asr/run_final`
+
+### 7. `AsrParaformer.min_first_partial_feature_frames`
+
+这个参数更偏实时性：
+
+- 主要影响首个 partial 的出现时机
+- 不宜为了压 `RTF` 而盲目抬高
+
+推荐做法是：
+
+- 先固定 `min_first_partial_feature_frames`
+- 再扫描 `min_new_feature_frames`
+- 在“首字时延仍可接受”的前提下找平衡点
+
+## 一次实际门槛扫描
+
+在当前 `streaming_paraformer_asr.json` 主线配置上，我们固定：
+
+- `min_first_partial_feature_frames = 10`
+
+只扫描：
+
+- `min_new_feature_frames = 12 / 16 / 20 / 24 / 28 / 32`
+
+得到一组稳定结果：
+
+| `min_new_feature_frames` | `First Partial` | `First Final` | `RTF` | `Results` | `run_partial` 次数 |
+|------|------:|------:|------:|------:|------:|
+| 12 | 16.30ms | 132.36ms | 0.142 | 14 | 10 |
+| 16 | 16.30ms | 119.42ms | 0.113 | 12 | 8 |
+| 20 | 19.75ms | 69.94ms | 0.092 | 8 | 4 |
+| 24 | 19.61ms | 69.06ms | 0.097 | 8 | 4 |
+| 28 | 20.95ms | 70.78ms | 0.094 | 8 | 4 |
+| 32 | 16.51ms | 86.08ms | 0.066 | 6 | 2 |
+
+### 如何解读
+
+- `12 / 16`
+  - `partial` 太密
+  - `run_partial` 次数明显偏多
+  - `RTF` 和 `First Final` 都变差
+- `20 / 24 / 28`
+  - 构成当前较稳定的平衡区
+  - `run_partial = 4`
+  - `Results = 8`
+  - `RTF` 维持在 `0.09x`
+- `32`
+  - 吞吐最好
+  - 但 `partial` 次数只剩 `2`
+  - `Results` 掉到 `6`
+  - 更像吞吐优先档，不适合作为默认流式档
+
+### 当前推荐
+
+如果目标是：
+
+- 保持流式响应感
+- 避免把系统调成“近似离线”
+- 同时维持较好的 `RTF`
+
+当前更推荐把：
+
+- `min_new_feature_frames = 20`
+- `min_first_partial_feature_frames = 10`
+
+作为主线基线。
+
+这组参数不是绝对最小 `RTF`，但在：
+
+- `First Partial`
+- `First Final`
+- `RTF`
+- `run_partial` 频率
+
+之间给出了更均衡的结果。
 
 ## 认识几个“看起来像性能参数”的字段
 

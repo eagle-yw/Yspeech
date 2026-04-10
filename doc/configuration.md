@@ -216,6 +216,14 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
 | `parallel` | bool | 否 | 预留标记，当前调度未直接消费 |
 | `error_handling` | object | 否 | 错误处理策略 |
 
+说明：
+
+- 流式 ASR 主线默认使用增量 decode
+- `FeatureStage` 发布的 `delta_features` 表示“本次新增特征区间”
+- 这些 delta 需要持续送入 core 的流式状态
+- 不能因为本轮未达到 decode 门槛，就跳过 delta 的接收
+- `decode_final` 必须基于 `full_context` 做最终收尾，不能简单复用 partial 路径
+
 ### error_handling
 
 | 字段 | 类型 | 说明 |

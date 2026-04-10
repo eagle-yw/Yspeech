@@ -36,6 +36,7 @@ public:
             std::max(1, std::min(min_feature_frames_, 4))
         );
         max_decode_feature_frames_ = config.value("max_decode_feature_frames", 0);
+        enable_incremental_decode_ = config.value("enable_incremental_decode", true);
         core_id_ = config.value("__core_id", core_id_);
         core_pool_.clear();
         core_pool_.reserve(core_pool_size_);
@@ -79,7 +80,7 @@ public:
                 return;
             }
         }
-        snapshot = collect_stream_snapshot(runtime, registry, token.stream_id);
+        snapshot = collect_stream_snapshot(runtime, token.stream_id);
         if (snapshot.features.empty()) {
             return;
         }
@@ -87,16 +88,30 @@ public:
             std::scoped_lock lock(stream_state_mutex_);
             stream_state = stream_states_[token.stream_id];
         }
+        if (enable_incremental_decode_ &&
+            snapshot.feature_version > stream_state.accepted_feature_version &&
+            !snapshot.delta_features.empty()) {
+            auto& holder = core_for(token.line_id);
+            std::scoped_lock lock(holder.mutex);
+            if (!holder.core) {
+                return;
+            }
+            holder.core->accept_features(token.stream_id, snapshot.delta_features);
+            std::scoped_lock state_lock(stream_state_mutex_);
+            auto& state = stream_states_[token.stream_id];
+            state.accepted_feature_version = snapshot.feature_version;
+            state.pending_feature_frames += snapshot.delta_feature_count;
+            stream_state.accepted_feature_version = snapshot.feature_version;
+            stream_state.pending_feature_frames = state.pending_feature_frames;
+        }
         const auto effective_feature_count =
             max_decode_feature_frames_ > 0
                 ? std::min(snapshot.feature_count, max_decode_feature_frames_)
                 : snapshot.feature_count;
-        const auto new_frames = effective_feature_count > stream_state.last_feature_count
-            ? effective_feature_count - stream_state.last_feature_count
-            : 0;
+        const auto pending_frames = stream_state.pending_feature_frames;
         has_partial_work =
             snapshot.feature_version > stream_state.last_feature_version &&
-            (new_frames >= min_feature_frames_ || stream_state.last_feature_version == 0);
+            (pending_frames >= min_feature_frames_ || stream_state.last_feature_version == 0);
         should_emit_segment_final =
             segment_closed && snapshot.closed_segment_count > stream_state.finalized_segment_count &&
             snapshot.feature_version > stream_state.finalized_segment_feature_version;
@@ -104,7 +119,7 @@ public:
             return;
         }
         if (!segment_closed && stream_state.last_feature_count > 0 &&
-            new_frames < min_feature_frames_) {
+            pending_frames < min_feature_frames_) {
             return;
         }
         if (!segment_closed && stream_state.last_feature_count == 0 &&
@@ -132,7 +147,13 @@ public:
             }
             apply_capabilities(pre_capabilities_, runtime);
             auto aspect_payloads = before_aspects(runtime);
-            result = holder.core->infer(snapshot.features);
+            if (enable_incremental_decode_ && holder.core->supports_incremental()) {
+                result = should_emit_segment_final
+                    ? holder.core->decode_final(token.stream_id, snapshot.features)
+                    : holder.core->decode_partial(token.stream_id, snapshot.features);
+            } else {
+                result = holder.core->infer(snapshot.features);
+            }
             after_aspects(runtime, std::move(aspect_payloads));
             apply_capabilities(post_capabilities_, runtime);
         }
@@ -153,8 +174,10 @@ public:
         {
             std::scoped_lock lock(stream_state_mutex_);
             auto& state = stream_states_[token.stream_id];
+            state.accepted_feature_version = snapshot.feature_version;
             state.last_feature_version = snapshot.feature_version;
             state.last_feature_count = snapshot.feature_count;
+            state.pending_feature_frames = 0;
             state.last_result_cache = result;
             if (should_emit_segment_final) {
                 state.finalized_segment_count = snapshot.closed_segment_count;
@@ -197,6 +220,11 @@ public:
 
     void bind_stats(ProcessingStats* stats) {
         runtime_stats_ = stats;
+        for (auto& holder : core_pool_) {
+            if (holder && holder->core) {
+                holder->core->bind_stats(stats);
+            }
+        }
     }
 
 private:
@@ -206,8 +234,10 @@ private:
     };
 
     struct StreamAsrState {
+        std::uint64_t accepted_feature_version = 0;
         std::uint64_t last_feature_version = 0;
         int last_feature_count = 0;
+        int pending_feature_frames = 0;
         std::size_t finalized_segment_count = 0;
         std::uint64_t finalized_segment_feature_version = 0;
         std::uint64_t finalized_stream_feature_version = 0;
@@ -216,9 +246,11 @@ private:
     };
 
     struct StreamSnapshot {
-        std::vector<std::vector<float>> features;
+        FeatureSequenceView features;
+        FeatureSequenceView delta_features;
         std::uint64_t feature_version = 0;
         int feature_count = 0;
+        int delta_feature_count = 0;
         std::size_t closed_segment_count = 0;
         std::optional<VadSegment> last_segment;
     };
@@ -227,38 +259,31 @@ private:
         return *core_pool_.at(line_id % core_pool_.size());
     }
 
-    auto collect_stream_snapshot(
-        RuntimeContext& runtime,
-        SegmentRegistry& registry,
-        const std::string& stream_id
-    ) const -> StreamSnapshot {
+    auto collect_stream_snapshot(RuntimeContext& runtime, const std::string& stream_id) const -> StreamSnapshot {
         StreamSnapshot snapshot;
         {
             std::scoped_lock lock(runtime.stream_feature_mutex);
             if (auto it = runtime.stream_feature_snapshots.find(stream_id);
                 it != runtime.stream_feature_snapshots.end()) {
-                snapshot.features = it->second.features;
+                snapshot.features = FeatureSequenceView::from_chunk_list(
+                    it->second.chunks,
+                    it->second.feature_count
+                );
+                snapshot.delta_features = FeatureSequenceView::from_chunk_list(
+                    it->second.delta_chunks,
+                    it->second.delta_feature_count
+                );
                 snapshot.feature_version = it->second.version;
                 snapshot.feature_count = it->second.feature_count;
+                snapshot.delta_feature_count = it->second.delta_feature_count;
             }
         }
-        auto segments = registry.snapshot_ordered();
-        for (const auto& segment : segments) {
-            if (!segment) {
-                continue;
-            }
-            std::lock_guard lock(segment->mutex);
-            if (segment->stream_id != stream_id) {
-                continue;
-            }
-            if (!segment->feature_ready) {
-                continue;
-            }
-            if (segment->vad_segment.has_value()) {
-                snapshot.last_segment = segment->vad_segment;
-            }
-            if (segment->lifecycle == SegmentLifecycle::Closed) {
-                snapshot.closed_segment_count += 1;
+        {
+            std::scoped_lock lock(runtime.stream_segment_mutex);
+            if (auto it = runtime.stream_segment_summaries.find(stream_id);
+                it != runtime.stream_segment_summaries.end()) {
+                snapshot.closed_segment_count = it->second.closed_segment_count;
+                snapshot.last_segment = it->second.last_segment;
             }
         }
         return snapshot;
@@ -284,7 +309,7 @@ private:
     }
 
     void maybe_emit_stream_final(PipelineToken& token, RuntimeContext& runtime, SegmentRegistry& registry) {
-        auto snapshot = collect_stream_snapshot(runtime, registry, token.stream_id);
+        auto snapshot = collect_stream_snapshot(runtime, token.stream_id);
         if (snapshot.features.empty()) {
             return;
         }
@@ -300,16 +325,27 @@ private:
         }
 
         AsrResult result;
-        auto& holder = core_for(token.line_id);
-        std::scoped_lock lock(holder.mutex);
-        if (!holder.core) {
-            return;
+        const bool has_new_context_since_last_decode =
+            snapshot.feature_version > stream_state.last_feature_version;
+        const bool can_reuse_cached_stream_final =
+            !has_new_context_since_last_decode &&
+            stream_state.last_result_cache.has_value();
+        if (can_reuse_cached_stream_final) {
+            result = *stream_state.last_result_cache;
+        } else {
+            auto& holder = core_for(token.line_id);
+            std::scoped_lock lock(holder.mutex);
+            if (!holder.core) {
+                return;
+            }
+            apply_capabilities(pre_capabilities_, runtime);
+            auto aspect_payloads = before_aspects(runtime);
+            result = enable_incremental_decode_ && holder.core->supports_incremental()
+                ? holder.core->decode_final(token.stream_id, snapshot.features)
+                : holder.core->infer(snapshot.features);
+            after_aspects(runtime, std::move(aspect_payloads));
+            apply_capabilities(post_capabilities_, runtime);
         }
-        apply_capabilities(pre_capabilities_, runtime);
-        auto aspect_payloads = before_aspects(runtime);
-        result = holder.core->infer(snapshot.features);
-        after_aspects(runtime, std::move(aspect_payloads));
-        apply_capabilities(post_capabilities_, runtime);
 
         if (result.text.empty()) {
             return;
@@ -342,8 +378,10 @@ private:
         {
             std::scoped_lock lock(stream_state_mutex_);
             auto& state = stream_states_[token.stream_id];
+            state.accepted_feature_version = snapshot.feature_version;
             state.last_feature_version = snapshot.feature_version;
             state.last_feature_count = snapshot.feature_count;
+            state.pending_feature_frames = 0;
             state.last_result_cache = result;
             state.finalized_stream_feature_version = snapshot.feature_version;
             state.stream_final_emitted = true;
@@ -351,6 +389,15 @@ private:
         {
             std::scoped_lock lock(runtime.stream_feature_mutex);
             runtime.stream_feature_snapshots.erase(token.stream_id);
+        }
+        for (auto& holder : core_pool_) {
+            if (!holder || !holder->core) {
+                continue;
+            }
+            std::scoped_lock lock(holder->mutex);
+            if (enable_incremental_decode_ && holder->core->supports_incremental()) {
+                holder->core->reset_stream(token.stream_id);
+            }
         }
         registry.erase_closed();
     }
@@ -361,6 +408,7 @@ private:
     int min_feature_frames_ = 8;
     int min_first_partial_feature_frames_ = 4;
     int max_decode_feature_frames_ = 0;
+    bool enable_incremental_decode_ = true;
     std::vector<std::unique_ptr<LineCoreHolder>> core_pool_;
     std::vector<AspectIface> aspects_;
     std::vector<CapabilityIface> pre_capabilities_;

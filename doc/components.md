@@ -175,6 +175,43 @@ AOP 切面编程：
 - 适合做计时、tracing、统一日志、性能统计
 - 当前 `streaming_demo` 的 Performance 数据主来源是 `TimerAspect`
 
+## 9.1 通用 Profiling 方案
+
+当前默认性能主链只统计到 `Stage -> Core` 边界总耗时。为了继续分析热点 core 的内部成本，系统需要第二层 profiling：
+
+- 第一层：`TimerAspect`
+  - 统计整个 core 调用时间
+- 第二层：`Core internal profiling`
+  - 统计 core 内部阶段时间
+  - 例如：
+    - `pack_partial`
+    - `run_partial`
+    - `decode_partial`
+    - `pack_final`
+    - `run_final`
+    - `decode_final`
+
+这套 profiling 的职责分工如下：
+
+- `Aspect`
+  - 负责边界级耗时
+- `Core`
+  - 负责内部 phase 耗时采集
+- `Capability`
+  - 负责消费 profiling 数据做日志、导出、状态或告警
+
+这意味着：
+
+- `Capability` 可以参与 profiling 体系
+- 但它不负责默认采样
+- 默认采样仍由 `TimerAspect + Core 内部 phase record` 完成
+
+当前主线已经能直接看出：
+
+- `asr/run` 是绝对热点
+- `run_final` 往往重于 `run_partial`
+- `pack/decode` 目前只是边角开销
+
 ## 10. Aspect 与 Capability 的边界
 
 两者都会挂在 `Stage -> Core` 边界，所以都有横切能力，但职责不同：

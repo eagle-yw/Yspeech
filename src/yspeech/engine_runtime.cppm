@@ -548,6 +548,7 @@ void EngineRuntime::init_components() {
         feature_stage_.emplace();
         asr_stage_.emplace();
         event_stage_.emplace();
+        std::optional<nlohmann::json> feature_stage_params;
 
         if (const auto* stage = builder_config.recipe.stage_by_role(PipelineStageRole::Source); stage) {
             nlohmann::json params = nlohmann::json::object();
@@ -592,6 +593,7 @@ void EngineRuntime::init_components() {
                 params["__core_id"] = cfg.ops().front().id;
                 params["core_name"] = cfg.ops().front().name;
                 params["capabilities"] = build_stage_capabilities(pipeline_config_, cfg.ops().front());
+                feature_stage_params = params;
                 feature_stage_->init(params);
                 feature_stage_->bind_stats(&stats_);
             }

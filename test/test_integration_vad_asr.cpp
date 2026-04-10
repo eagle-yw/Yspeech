@@ -96,7 +96,7 @@ TEST(TestIntegrationVadAsr, FbankToParaformerSmoke) {
     ASSERT_FALSE(fbank_result->features.empty());
 
     EXPECT_NO_THROW({
-        auto asr_result = asr->infer(fbank_result->features);
+        auto asr_result = asr->infer(FeatureSequenceView::from_frames(fbank_result->features));
         EXPECT_TRUE(asr_result.text.empty() || !asr_result.text.empty());
     });
     fbank->deinit();

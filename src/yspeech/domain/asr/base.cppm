@@ -91,11 +91,81 @@ protected:
     int num_threads_ = 4;
 };
 
+export using FeatureFrames = std::vector<std::vector<float>>;
+export using FeatureChunk = std::shared_ptr<const FeatureFrames>;
+export using FeatureChunkList = std::vector<FeatureChunk>;
+export using FeatureChunkListPtr = std::shared_ptr<const FeatureChunkList>;
+
+export struct FeatureSequenceView {
+    FeatureChunkListPtr chunks;
+    int feature_count = 0;
+
+    [[nodiscard]] auto empty() const -> bool {
+        return feature_count <= 0 || !chunks || chunks->empty();
+    }
+
+    [[nodiscard]] auto feature_dim() const -> int {
+        if (!chunks) {
+            return 0;
+        }
+        for (const auto& chunk : *chunks) {
+            if (chunk && !chunk->empty()) {
+                return static_cast<int>(chunk->front().size());
+            }
+        }
+        return 0;
+    }
+
+    static auto from_frames(const FeatureFrames& frames) -> FeatureSequenceView {
+        FeatureSequenceView view;
+        view.feature_count = static_cast<int>(frames.size());
+        if (!frames.empty()) {
+            auto chunks = std::make_shared<FeatureChunkList>();
+            chunks->push_back(std::make_shared<FeatureFrames>(frames));
+            view.chunks = std::move(chunks);
+        }
+        return view;
+    }
+
+    static auto from_chunk_list(FeatureChunkListPtr chunks, int total_feature_count) -> FeatureSequenceView {
+        FeatureSequenceView view;
+        view.feature_count = total_feature_count;
+        view.chunks = std::move(chunks);
+        return view;
+    }
+
+    static auto from_chunk_copy(const FeatureChunkList& chunks, int total_feature_count) -> FeatureSequenceView {
+        FeatureSequenceView view;
+        view.feature_count = total_feature_count;
+        view.chunks = std::make_shared<FeatureChunkList>(chunks);
+        return view;
+    }
+};
+
 export class AsrCoreIface {
 public:
     virtual ~AsrCoreIface() = default;
     virtual void init(const nlohmann::json& config) = 0;
-    virtual auto infer(const std::vector<std::vector<float>>& features) -> AsrResult = 0;
+    virtual auto infer(const FeatureSequenceView& features) -> AsrResult = 0;
+    virtual void bind_stats(ProcessingStats* stats) {
+        (void)stats;
+    }
+    virtual auto supports_incremental() const -> bool { return false; }
+    virtual void accept_features(const std::string& stream_id, const FeatureSequenceView& delta_features) {
+        (void)stream_id;
+        (void)delta_features;
+    }
+    virtual auto decode_partial(const std::string& stream_id, const FeatureSequenceView& full_context) -> AsrResult {
+        (void)stream_id;
+        return infer(full_context);
+    }
+    virtual auto decode_final(const std::string& stream_id, const FeatureSequenceView& full_context) -> AsrResult {
+        (void)stream_id;
+        return infer(full_context);
+    }
+    virtual void reset_stream(const std::string& stream_id) {
+        (void)stream_id;
+    }
     virtual void deinit() = 0;
 };
 

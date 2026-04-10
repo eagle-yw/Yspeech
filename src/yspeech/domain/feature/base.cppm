@@ -9,8 +9,11 @@ import std;
 namespace yspeech {
 
 export struct KaldiFbankOutput {
+    std::vector<std::vector<float>> delta_features;
     std::vector<std::vector<float>> features;
+    int delta_num_frames = 0;
     int num_frames = 0;
+    int accumulated_num_frames = 0;
     int num_bins = 0;
     std::uint64_t version = 0;
 };

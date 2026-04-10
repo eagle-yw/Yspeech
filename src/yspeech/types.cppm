@@ -277,6 +277,55 @@ export struct CoreTiming {
     }
 };
 
+export struct CorePhaseTiming {
+    std::string core_id;
+    std::string phase;
+    double total_time_ms = 0.0;
+    double min_time_ms = std::numeric_limits<double>::max();
+    double max_time_ms = 0.0;
+    double avg_time_ms = 0.0;
+    std::size_t call_count = 0;
+    std::vector<double> recent_times_ms;
+
+    void record(double time_ms, std::size_t history_size = 100) {
+        total_time_ms += time_ms;
+        min_time_ms = std::min(min_time_ms, time_ms);
+        max_time_ms = std::max(max_time_ms, time_ms);
+        call_count++;
+        avg_time_ms = total_time_ms / static_cast<double>(call_count);
+
+        if (history_size > 0) {
+            recent_times_ms.push_back(time_ms);
+            if (recent_times_ms.size() > history_size) {
+                recent_times_ms.erase(recent_times_ms.begin());
+            }
+        }
+    }
+
+    double p50() const {
+        if (recent_times_ms.empty()) return 0.0;
+        auto sorted = recent_times_ms;
+        std::sort(sorted.begin(), sorted.end());
+        return sorted[sorted.size() / 2];
+    }
+
+    double p95() const {
+        if (recent_times_ms.empty()) return 0.0;
+        auto sorted = recent_times_ms;
+        std::sort(sorted.begin(), sorted.end());
+        std::size_t idx = static_cast<std::size_t>(sorted.size() * 0.95);
+        return sorted[std::min(idx, sorted.size() - 1)];
+    }
+
+    double p99() const {
+        if (recent_times_ms.empty()) return 0.0;
+        auto sorted = recent_times_ms;
+        std::sort(sorted.begin(), sorted.end());
+        std::size_t idx = static_cast<std::size_t>(sorted.size() * 0.99);
+        return sorted[std::min(idx, sorted.size() - 1)];
+    }
+};
+
 export struct ProcessingStats {
     std::size_t audio_chunks_processed = 0;
     std::size_t speech_segments_detected = 0;
@@ -314,6 +363,7 @@ export struct ProcessingStats {
     double rtf = 0.0;
     
     std::unordered_map<std::string, CoreTiming> core_timings;
+    std::unordered_map<std::string, CorePhaseTiming> core_phase_timings;
     
     double peak_memory_mb = 0.0;
     double avg_cpu_percent = 0.0;
@@ -344,6 +394,20 @@ export struct ProcessingStats {
             core_timings[op_id] = CoreTiming{.op_id = op_id};
         }
         core_timings[op_id].record_active_window(start_ms, end_ms);
+    }
+
+    void record_core_phase_time(const std::string& core_id,
+                                const std::string& phase,
+                                double time_ms,
+                                std::size_t history_size = 100) {
+        const auto key = std::format("{}:{}", core_id, phase);
+        if (!core_phase_timings.contains(key)) {
+            core_phase_timings[key] = CorePhaseTiming{
+                .core_id = core_id,
+                .phase = phase,
+            };
+        }
+        core_phase_timings[key].record(time_ms, history_size);
     }
     
     std::string to_string() const {
@@ -444,6 +508,52 @@ export struct ProcessingStats {
             }
             
             result += "└─────────────────┴──────────┴──────────┴───────┴───────┴──────────┴──────────┴──────────┴─────────┘\n";
+        }
+
+        if (!core_phase_timings.empty()) {
+            result += "\nCore Phase Performance:\n";
+            result += "┌──────────────────────┬──────────┬──────────┬───────┬──────────┬──────────┬──────────┐\n";
+            result += "│ Core/Phase           │ Total    │ Avg      │ Calls │ P50      │ P95      │ P99      │\n";
+            result += "├──────────────────────┼──────────┼──────────┼───────┼──────────┼──────────┼──────────┤\n";
+
+            std::vector<std::reference_wrapper<const CorePhaseTiming>> rows;
+            rows.reserve(core_phase_timings.size());
+            for (const auto& [key, timing] : core_phase_timings) {
+                (void)key;
+                rows.push_back(std::cref(timing));
+            }
+            std::ranges::sort(rows, [](const CorePhaseTiming& lhs, const CorePhaseTiming& rhs) {
+                if (lhs.core_id == rhs.core_id) {
+                    return lhs.phase < rhs.phase;
+                }
+                return lhs.core_id < rhs.core_id;
+            });
+
+            for (const auto& timing_ref : rows) {
+                const auto& timing = timing_ref.get();
+                const auto label = std::format("{}/{}", timing.core_id, timing.phase);
+                if (!timing.recent_times_ms.empty()) {
+                    result += std::format("│ {:<20} │ {:>6.2f}ms │ {:>6.2f}ms │ {:>5} │ {:>6.2f}ms │ {:>6.2f}ms │ {:>6.2f}ms │\n",
+                        label,
+                        timing.total_time_ms,
+                        timing.avg_time_ms,
+                        timing.call_count,
+                        timing.p50(),
+                        timing.p95(),
+                        timing.p99());
+                } else {
+                    result += std::format("│ {:<20} │ {:>6.2f}ms │ {:>6.2f}ms │ {:>5} │ {:>6} │ {:>6} │ {:>6} │\n",
+                        label,
+                        timing.total_time_ms,
+                        timing.avg_time_ms,
+                        timing.call_count,
+                        "-",
+                        "-",
+                        "-");
+                }
+            }
+
+            result += "└──────────────────────┴──────────┴──────────┴───────┴──────────┴──────────┴──────────┘\n";
         }
         
         return result;

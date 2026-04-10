@@ -136,7 +136,7 @@ TEST(TestAsrParaformer, EmptyFeaturesNeedMoreInput) {
         {"language", "zh"}
     };
     asr->init(config);
-    auto result = asr->infer({});
+    auto result = asr->infer(FeatureSequenceView{});
     EXPECT_TRUE(result.text.empty());
     asr->deinit();
 }

@@ -94,3 +94,28 @@ TEST(TestKaldiFbankOp, Deinit) {
     auto fbank = create_fbank();
     EXPECT_NO_THROW(fbank->deinit());
 }
+
+TEST(TestKaldiFbankOp, AccumulationSeparatesDeltaAndAccumulatedViews) {
+    auto fbank = create_fbank({
+        {"enable_accumulation", true},
+        {"min_accumulated_frames", 1},
+        {"max_accumulated_frames", 100}
+    });
+
+    auto first = fbank->process_samples(generate_audio(0.3f), false);
+    ASSERT_TRUE(first.has_value());
+    ASSERT_FALSE(first->delta_features.empty());
+    ASSERT_FALSE(first->features.empty());
+    EXPECT_EQ(first->delta_num_frames, static_cast<int>(first->delta_features.size()));
+    EXPECT_EQ(first->accumulated_num_frames, static_cast<int>(first->features.size()));
+    EXPECT_EQ(first->delta_num_frames, first->accumulated_num_frames);
+
+    auto second = fbank->process_samples(generate_audio(0.3f), false);
+    ASSERT_TRUE(second.has_value());
+    ASSERT_FALSE(second->delta_features.empty());
+    ASSERT_FALSE(second->features.empty());
+    EXPECT_EQ(second->delta_num_frames, static_cast<int>(second->delta_features.size()));
+    EXPECT_EQ(second->accumulated_num_frames, static_cast<int>(second->features.size()));
+    EXPECT_GT(second->accumulated_num_frames, second->delta_num_frames);
+    EXPECT_EQ(second->num_frames, second->accumulated_num_frames);
+}

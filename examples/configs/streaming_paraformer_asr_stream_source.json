@@ -65,8 +65,7 @@
             "dither": 0,
             "snip_edges": false,
             "lfr_window_size": 7,
-            "lfr_window_shift": 6,
-            "cmvn_file": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/am.mvn"
+            "lfr_window_shift": 6
           }
         }
       ]
@@ -85,8 +84,8 @@
             "tokens_path": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt",
             "language": "zh",
             "num_threads": 2,
-            "min_new_feature_frames": 24,
-            "min_first_partial_feature_frames": 12
+            "min_new_feature_frames": 8,
+            "min_first_partial_feature_frames": 4
           }
         }
       ]

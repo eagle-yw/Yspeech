@@ -113,6 +113,166 @@ flowchart LR
 6. `EventStage` 负责事件分发，属于 runtime 骨架层，而不是算法领域层。
 7. `Aspect` 继续保留，用于日志、计时、统计、告警、追踪等横切能力。
 
+## 通用 Profiling 设计
+
+当前 `TimerAspect` 已经能稳定给出 `Stage -> Core` 边界级别的总耗时，但当某个 core 成为主热点时，我们还需要继续回答：
+
+- 时间是花在 `pack`、`run` 还是 `decode`
+- 不同 core 是否都能按统一方式暴露内部阶段时间
+- 这些 profiling 数据由谁生产、由谁消费、最终显示到哪里
+
+### 设计目标
+
+1. 保留 `TimerAspect` 作为默认性能主统计链。
+2. 新增一套通用 profiling 能力，用于 core 内部阶段拆分。
+3. 这套能力既要支持 `streaming_demo` 观察，也要支持后续导出、状态和告警消费。
+4. profiling 方案不能把 `Capability` 误用成唯一采样入口。
+
+### 边界划分
+
+Profiling 统一按三层职责拆开：
+
+- `Aspect`
+  - 负责 `Stage -> Core` 边界总耗时
+  - 定义默认 `ProcessingStats` 口径
+- `Core internal profiling`
+  - 负责 core 内部阶段时间采集
+  - 例如 `pack / run / decode`
+- `Capability`
+  - 负责消费 profiling 数据
+  - 例如打印、导出、状态上报、告警
+
+一句话原则：
+
+- `Aspect` 负责“这个 core 总共花了多久”
+- `Core profiling` 负责“这段时间具体花在哪里”
+- `Capability` 负责“这些数据要不要额外输出或治理”
+
+### 数据模型
+
+建议在运行时引入统一的 phase profiling 结构，而不是让每个 core 私下维护一套不兼容字段。
+
+推荐最小模型：
+
+```cpp
+struct CorePhaseTiming {
+    std::string core_id;
+    std::string phase;
+    double total_time_ms = 0.0;
+    std::size_t calls = 0;
+    std::vector<double> samples_ms;
+};
+```
+
+对应地，`RuntimeContext` / `ProcessingStats` 增加统一容器：
+
+- `core_phase_timings`
+
+phase 名称由 core 自己声明，但建议先约定这几个标准名：
+
+- `pack`
+- `run`
+- `decode`
+- `postprocess`
+
+如果某个 core 没有这么多阶段，也可以只产出它实际拥有的 phase。
+
+### 生产方式
+
+通用 profiling 不通过 capability 直接测量，而是由 core 主动记录。
+
+推荐方式：
+
+1. core 内部通过统一 helper/RAII scope 记录阶段时间
+2. 最终把数据写进 `RuntimeContext.stats`
+
+例如在 `ParaformerCore::infer(...)` 内部：
+
+- `pack_partial` / `pack_final`
+  - `FeatureSequenceView -> input_buffer`
+- `run_partial` / `run_final`
+  - `session->Run(...)`
+- `decode_partial` / `decode_final`
+  - logits -> token -> text
+
+这样做的原因是：
+
+- 只有 core 自己知道内部阶段边界
+- `Capability` 只能包住 core 调用前后，看不到 core 内部细节
+
+### 消费方式
+
+这套 profiling 数据的第一消费者应该是：
+
+- `streaming_demo`
+
+建议新增一个单独表：
+
+- `Core Phase Performance`
+
+示意：
+
+| Core | Phase | Total | Avg | Calls | P50 | P95 | % Core |
+|------|------|------|------|------|------|------|------|
+| asr | run_partial | ... | ... | ... | ... | ... | ... |
+| asr | run_final | ... | ... | ... | ... | ... | ... |
+| asr | decode_partial | ... | ... | ... | ... | ... | ... |
+| asr | decode_final | ... | ... | ... | ... | ... | ... |
+
+同时保留现有：
+
+- `Performance Summary`
+- `Core Performance`
+
+也就是说：
+
+- `Core Performance`
+  - 看哪个 core 是热点
+- `Core Phase Performance`
+  - 看这个热点内部哪一段最重
+
+当前主线里，这张表已经能稳定回答：
+
+- `asr/run` 是主热点
+- `run_final` 通常比 `run_partial` 更贵
+- `pack/decode` 目前不是主瓶颈
+
+### Capability 在 Profiling 中的位置
+
+Capability 可以参与 profiling，但只能作为“消费者增强层”，不能取代主采样链。
+
+适合的 capability 形态：
+
+- `ProfilingCapability`
+
+它的职责不是测时间，而是读取已有 `core_phase_timings` 数据并执行：
+
+- 打日志
+- 发状态
+- 导出
+- 触发阈值告警
+
+因此，profiling 设计里：
+
+- 不让 `Capability` 直接承担默认性能采样
+- 但允许它基于已采样的数据做治理动作
+
+### 实施顺序
+
+推荐按低风险顺序落地：
+
+1. `RuntimeContext` / `ProcessingStats` 增加统一 `core_phase_timings`
+2. `ParaformerCore` 先接 `pack/run/decode`
+3. `streaming_demo` 增加 `Core Phase Performance`
+4. 再逐步给 `SenseVoiceCore / WhisperCore / KaldiFbankCore` 接入
+5. 最后如有需要，再补 `ProfilingCapability`
+
+### 当前认知结论
+
+- 默认性能统计主链仍然是 `TimerAspect`
+- core 内部阶段 profiling 是新增的第二层观测能力
+- `Capability` 只负责消费 profiling 数据，不负责定义默认统计口径
+
 ### 线性段与分支能力
 
 当前推荐主线是单路径静态 DAG：

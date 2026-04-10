@@ -171,6 +171,9 @@ private:
             return std::nullopt;
         }
 
+        auto delta_features = features;
+        const auto delta_frame_count = static_cast<int>(delta_features.size());
+
         if (enable_accumulation_) {
             accumulated_features_.insert(accumulated_features_.end(), features.begin(), features.end());
             if (accumulated_features_.size() < static_cast<size_t>(min_accumulated_frames_)) {
@@ -185,10 +188,15 @@ private:
         }
 
         return KaldiFbankOutput{
+            .delta_features = std::move(delta_features),
             .features = std::move(features),
+            .delta_num_frames = delta_frame_count,
             .num_frames = enable_accumulation_
                 ? static_cast<int>(accumulated_features_.size())
                 : static_cast<int>(frames_to_read),
+            .accumulated_num_frames = enable_accumulation_
+                ? static_cast<int>(accumulated_features_.size())
+                : delta_frame_count,
             .num_bins = fbank_->Dim() * lfr_window_size_,
             .version = static_cast<std::uint64_t>(++output_version_)
         };

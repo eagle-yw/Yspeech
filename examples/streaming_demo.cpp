@@ -284,6 +284,7 @@ auto run_once(const DemoOptions& opts, bool verbose) -> RunResult {
     std::condition_variable status_cv;
     bool input_eof_seen = false;
     bool stream_drained_seen = false;
+    bool stream_final_seen = false;
 
     std::mutex transcript_mutex;
     std::string latest_partial;
@@ -319,6 +320,13 @@ auto run_once(const DemoOptions& opts, bool verbose) -> RunResult {
                     std::lock_guard lock(transcript_mutex);
                     final_transcript = text;
                 }
+            }
+            if (event.kind == yspeech::EngineEventKind::ResultStreamFinal) {
+                {
+                    std::lock_guard lock(status_mutex);
+                    stream_final_seen = true;
+                }
+                status_cv.notify_all();
             }
             return;
         }
@@ -387,7 +395,9 @@ auto run_once(const DemoOptions& opts, bool verbose) -> RunResult {
                 latest_segment_final = text;
                 latest_partial.clear();
                 rendered_transcript = text;
-                final_transcript = text;
+                if (!stream_final_printed) {
+                    final_transcript = text;
+                }
                 if (should_print) {
                     last_block_text = text;
                 }
@@ -421,6 +431,11 @@ auto run_once(const DemoOptions& opts, bool verbose) -> RunResult {
                 }
                 stream_final_printed = true;
             }
+            {
+                std::lock_guard lock(status_mutex);
+                stream_final_seen = true;
+            }
+            status_cv.notify_all();
             if (!should_print) {
                 return;
             }
@@ -489,17 +504,51 @@ auto run_once(const DemoOptions& opts, bool verbose) -> RunResult {
 
     {
         std::unique_lock lock(status_mutex);
-        const bool drained = status_cv.wait_for(lock, std::chrono::seconds(30), [&]() {
-            return stream_drained_seen;
+        status_cv.wait_for(lock, std::chrono::seconds(30), [&]() {
+            return input_eof_seen || asr.input_eof_reached();
         });
-        if (!drained) {
-            status_cv.wait_for(lock, std::chrono::seconds(5), [&]() {
-                return input_eof_seen || asr.input_eof_reached();
-            });
-        }
     }
 
     asr.stop();
+
+    for (const auto& event : asr.get_all_events()) {
+        if (!event.asr.has_value()) {
+            continue;
+        }
+        auto text = normalize_text(event.asr->text);
+        if (text.empty()) {
+            continue;
+        }
+        if (event.kind == yspeech::EngineEventKind::ResultStreamFinal) {
+            bool should_print = false;
+            {
+                std::lock_guard lock(transcript_mutex);
+                final_transcript = text;
+                latest_partial.clear();
+                rendered_transcript = text;
+                should_print = verbose && !stream_final_printed && text != last_block_text;
+                stream_final_printed = true;
+                last_block_text = text;
+            }
+            if (should_print) {
+                if (event.vad_segment.has_value()) {
+                    std::print("\n[流最终 {:>5}ms - {:>5}ms] {}\n",
+                               event.vad_segment->start_ms,
+                               event.vad_segment->end_ms,
+                               text);
+                } else {
+                    std::print("\n[流最终] {}\n", text);
+                }
+            }
+            continue;
+        }
+        if (event.kind == yspeech::EngineEventKind::ResultSegmentFinal) {
+            std::lock_guard lock(transcript_mutex);
+            if (!stream_final_printed) {
+                final_transcript = text;
+            }
+        }
+    }
 
     RunResult result;
     result.stats = asr.get_stats();

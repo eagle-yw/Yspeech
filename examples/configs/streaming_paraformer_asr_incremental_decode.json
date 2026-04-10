@@ -1,5 +1,5 @@
 {
-  "name": "Streaming Paraformer ASR",
+  "name": "Streaming Paraformer ASR Incremental Decode",
   "version": "1.0",
   "log_level": "info",
   "task": "asr",

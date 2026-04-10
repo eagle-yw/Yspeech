@@ -10,6 +10,7 @@
 | 文件 | 说明 |
 |------|------|
 | `streaming_paraformer_asr.json` | 当前推荐的单线流式 ASR 主线 |
+| `streaming_paraformer_asr_incremental_decode.json` | 单线流式 ASR + 增量 decode 对照样例 |
 | `streaming_paraformer_asr_stream_source.json` | 单线流式 ASR + `source.type=stream` 外部推帧示例 |
 | `streaming_paraformer_asr_capabilities.json` | 单线流式 ASR + capability 示例 |
 | `offline_paraformer_asr.json` | 离线 ParaFormer，中文识别 |
@@ -58,6 +59,13 @@
 - `source.type = file`
 - 单路径静态 DAG：`FileSource -> SileroVad -> KaldiFbank -> AsrParaformer`
 - 当前推荐的单线流式 ASR 开发和回归基线
+- `asr_stage` 默认使用更保守的门控：
+  - `min_new_feature_frames = 8`
+  - `min_first_partial_feature_frames = 4`
+- 当前这样更容易同时兼顾：
+  - 最终转写正确性
+  - 3 段输出稳定性
+  - 较低 `RTF`
 
 ### `streaming_paraformer_asr_capabilities.json`
 
@@ -78,6 +86,12 @@
 - 运行时会创建独立的 `StreamSource`
 - 更适合作为 SDK/集成模板，而不是直接给 `streaming_demo` 使用
 
+### `streaming_paraformer_asr_incremental_decode.json`
+
+- 基于单线流式 ASR 主线
+- 用来对照验证当前默认的增量 decode 路径
+- 参数组合与主线保持一致，适合作为结果/性能对照样例
+
 ### `streaming_sensevoice_asr.json`
 
 - `task = asr`
@@ -94,6 +108,7 @@
 - `Vad / Feature / ASR` 参数沿用当前 Taskflow 主线口径
 - `asr_stage` 在 join 后继续处理
 - 用来验证 `RuntimeDagExecutor + tf::Pipeline` 的组合路径
+- `asr_stage` 同样沿用主线的保守门控阈值
 
 ### `streaming_paraformer_asr_dag_timeout.json`
 
@@ -101,6 +116,15 @@
 - `merge_stage` 增加 `join_timeout_ms = 0`
 - `Vad / Feature / ASR` 参数沿用当前 Taskflow 主线口径
 - 用来验证 join 的轻量超时放行语义
+
+## 当前 ASR 增量说明
+
+- `AsrStage` 已具备增量特征区间推进的基础设施
+- 当前主线默认使用增量 decode
+- 当前需要特别注意：
+  - `KaldiFbankOutput.delta_features` 是“本次新产出的特征帧”
+  - `AsrStage` 必须先把 delta 喂给 core，再决定是否 decode
+  - `decode_final` 必须基于 `full_context` 做最终收尾，不能简单复用 partial 路径
 
 ### `two_level_asr.json`
 

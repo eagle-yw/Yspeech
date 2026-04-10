@@ -30,7 +30,27 @@ public:
         load_tokens();
     }
 
-    auto infer(const std::vector<std::vector<float>>& features) -> AsrResult override {
+    auto infer(const FeatureSequenceView& features) -> AsrResult override {
+        return infer_with_mode(features, "infer");
+    }
+
+    auto decode_partial(const std::string& stream_id, const FeatureSequenceView& full_context) -> AsrResult override {
+        if (auto it = stream_states_.find(stream_id);
+            it != stream_states_.end() && it->second.chunks && !it->second.chunks->empty()) {
+            return infer_with_mode(FeatureSequenceView::from_chunk_list(it->second.chunks, it->second.feature_count), "partial");
+        }
+        return infer_with_mode(full_context, "partial");
+    }
+
+    auto decode_final(const std::string& stream_id, const FeatureSequenceView& full_context) -> AsrResult override {
+        (void)stream_id;
+        return infer_with_mode(full_context, "final");
+    }
+
+private:
+    auto infer_with_mode(const FeatureSequenceView& features, std::string_view mode) -> AsrResult {
+        using clock = std::chrono::steady_clock;
+        const auto infer_start = clock::now();
         AsrResult result;
         if (!session_ || features.empty()) {
             result.text = "";
@@ -38,13 +58,24 @@ public:
             return result;
         }
 
-        int num_frames = static_cast<int>(features.size());
-        int feat_dim = static_cast<int>(features[0].size());
+        int num_frames = features.feature_count;
+        int feat_dim = features.feature_dim();
+        if (num_frames <= 0 || feat_dim <= 0) {
+            result.text = "";
+            result.confidence = 0.0f;
+            return result;
+        }
         std::vector<float> input_data;
         input_data.reserve(num_frames * feat_dim);
-        for (const auto& frame : features) {
-            input_data.insert(input_data.end(), frame.begin(), frame.end());
+        for (const auto& chunk : *features.chunks) {
+            if (!chunk || chunk->empty()) {
+                continue;
+            }
+            for (const auto& frame : *chunk) {
+                input_data.insert(input_data.end(), frame.begin(), frame.end());
+            }
         }
+        const auto after_pack = clock::now();
 
         std::vector<int64_t> x_shape = {1, num_frames, feat_dim};
         std::vector<int64_t> length_shape = {1};
@@ -76,6 +107,7 @@ public:
                 input_names.data(), input_tensors.data(), 4,
                 output_names.data(), output_names.size()
             );
+            const auto after_run = clock::now();
 
             float* logits_data = outputs[0].GetTensorMutableData<float>();
             auto logits_shape = outputs[0].GetTensorTypeAndShapeInfo().GetShape();
@@ -124,6 +156,15 @@ public:
             if (detect_emotion_) {
                 result.emotion = detect_emotion_from_text(text);
             }
+            const auto infer_end = clock::now();
+            if (runtime_stats_ != nullptr) {
+                const auto pack_ms = std::chrono::duration<double, std::milli>(after_pack - infer_start).count();
+                const auto run_ms = std::chrono::duration<double, std::milli>(after_run - after_pack).count();
+                const auto decode_ms = std::chrono::duration<double, std::milli>(infer_end - after_run).count();
+                runtime_stats_->record_core_phase_time(core_id_, std::format("pack_{}", mode), pack_ms);
+                runtime_stats_->record_core_phase_time(core_id_, std::format("run_{}", mode), run_ms);
+                runtime_stats_->record_core_phase_time(core_id_, std::format("decode_{}", mode), decode_ms);
+            }
         } catch (const Ort::Exception& e) {
             log_error("ONNX Runtime error: {}", e.what());
             result.text.clear();
@@ -132,12 +173,50 @@ public:
         return result;
     }
 
+    void bind_stats(ProcessingStats* stats) override {
+        runtime_stats_ = stats;
+    }
+
+public:
+    auto supports_incremental() const -> bool override {
+        return true;
+    }
+
+    void accept_features(const std::string& stream_id, const FeatureSequenceView& delta_features) override {
+        if (delta_features.empty() || !delta_features.chunks) {
+            return;
+        }
+        auto& state = stream_states_[stream_id];
+        if (!state.chunks) {
+            state.chunks = std::make_shared<FeatureChunkList>();
+        } else if (state.chunks.use_count() > 1) {
+            state.chunks = std::make_shared<FeatureChunkList>(*state.chunks);
+        }
+        for (const auto& chunk : *delta_features.chunks) {
+            if (!chunk || chunk->empty()) {
+                continue;
+            }
+            state.chunks->push_back(chunk);
+        }
+        state.feature_count += delta_features.feature_count;
+    }
+
+    void reset_stream(const std::string& stream_id) override {
+        stream_states_.erase(stream_id);
+    }
+
     void deinit() override {
         session_.reset();
         env_.reset();
+        stream_states_.clear();
     }
 
 private:
+    struct StreamState {
+        std::shared_ptr<FeatureChunkList> chunks = std::make_shared<FeatureChunkList>();
+        int feature_count = 0;
+    };
+
     void init_onnx_session() {
         Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "yspeech_sensevoice");
         env_ = std::make_unique<Ort::Env>(std::move(env));
@@ -224,6 +303,8 @@ private:
     std::unique_ptr<Ort::Session> session_;
     Ort::MemoryInfo memory_info_{nullptr};
     std::unordered_map<int, std::string> id_to_token_;
+    std::unordered_map<std::string, StreamState> stream_states_;
+    ProcessingStats* runtime_stats_ = nullptr;
 };
 
 AsrCoreRegistrar<SenseVoiceCore> sensevoice_core_registrar("AsrSenseVoice");

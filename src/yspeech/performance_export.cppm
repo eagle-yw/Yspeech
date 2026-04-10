@@ -82,6 +82,28 @@ public:
             }
             j["core_timings"] = timings_json;
         }
+
+        if (!stats.core_phase_timings.empty()) {
+            nlohmann::json phase_timings_json = nlohmann::json::array();
+            for (const auto& [key, timing] : stats.core_phase_timings) {
+                (void)key;
+                nlohmann::json t;
+                t["core_id"] = timing.core_id;
+                t["phase"] = timing.phase;
+                t["total_time_ms"] = timing.total_time_ms;
+                t["min_time_ms"] = timing.min_time_ms == std::numeric_limits<double>::max() ? 0.0 : timing.min_time_ms;
+                t["max_time_ms"] = timing.max_time_ms;
+                t["avg_time_ms"] = timing.avg_time_ms;
+                t["call_count"] = timing.call_count;
+                if (!timing.recent_times_ms.empty()) {
+                    t["p50_ms"] = timing.p50();
+                    t["p95_ms"] = timing.p95();
+                    t["p99_ms"] = timing.p99();
+                }
+                phase_timings_json.push_back(t);
+            }
+            j["core_phase_timings"] = phase_timings_json;
+        }
         
         return j.dump(2);
     }
@@ -146,6 +168,23 @@ public:
                     << timing.call_count << ","
                     << timing.effective_call_count << ","
                     << std::fixed << std::setprecision(2) << timing.effective_avg_time_ms << ","
+                    << std::fixed << std::setprecision(2) << timing.p50() << ","
+                    << std::fixed << std::setprecision(2) << timing.p95() << ","
+                    << std::fixed << std::setprecision(2) << timing.p99() << "\n";
+            }
+        }
+
+        if (!stats.core_phase_timings.empty()) {
+            oss << "\ncore_id,phase,total_time_ms,avg_time_ms,min_time_ms,max_time_ms,call_count,p50_ms,p95_ms,p99_ms\n";
+            for (const auto& [key, timing] : stats.core_phase_timings) {
+                (void)key;
+                oss << timing.core_id << ","
+                    << timing.phase << ","
+                    << std::fixed << std::setprecision(2) << timing.total_time_ms << ","
+                    << std::fixed << std::setprecision(2) << timing.avg_time_ms << ","
+                    << std::fixed << std::setprecision(2) << (timing.min_time_ms == std::numeric_limits<double>::max() ? 0.0 : timing.min_time_ms) << ","
+                    << std::fixed << std::setprecision(2) << timing.max_time_ms << ","
+                    << timing.call_count << ","
                     << std::fixed << std::setprecision(2) << timing.p50() << ","
                     << std::fixed << std::setprecision(2) << timing.p95() << ","
                     << std::fixed << std::setprecision(2) << timing.p99() << "\n";

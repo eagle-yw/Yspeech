@@ -127,6 +127,37 @@ src/yspeech/domain/speaker/
 - 按配置启停的行为优先用 `Capability`
 - 不要同时为同一件事做一套 `Aspect` 和一套 `Capability`
 
+## Profiling 扩展时怎么落代码
+
+如果你的目标是继续分析热点 core 的内部耗时，不要直接把 profiling 逻辑写成 capability。
+
+推荐顺序：
+
+1. 在 core 内部定义 phase
+   - 例如：
+     - `pack`
+     - `run`
+     - `decode`
+2. 通过统一的 profiling helper/record API 把这些 phase 时间写进运行时统计
+3. 再让 `streaming_demo`、导出器或 capability 去消费这些数据
+
+不要反过来做成：
+
+- capability 自己测 core 内部时间
+
+因为 capability 只能稳定观测：
+
+- core 调用前
+- core 调用后
+
+它并不知道 core 内部哪个阶段开始、哪个阶段结束。
+
+一句话：
+
+- 采样在 core
+- 汇总在 runtime/stats
+- 展示和治理在 demo/export/capability
+
 ## 注册式扩展
 
 当前主线保留“按名字注册、按配置创建”的思路，但注册目标已经是 `Core`：
