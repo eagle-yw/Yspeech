@@ -16,7 +16,7 @@ flowchart LR
     engine[Engine]
     runtime[EngineRuntime]
     source[IFrameSource<br/>FileSource / MicSource / StreamSource]
-    dag[RuntimeDagExecutor]
+    dag[PipelineExecutor]
     pipe[PipelineExecutor / tf::Pipeline]
     stage[Domain Stage]
     core[Domain Core]
@@ -59,7 +59,7 @@ flowchart LR
     asr --> segment
 ```
 
-这条路径已经是当前流式运行时默认主线；线性配置会先被编译成单路径静态 DAG，再交给 `tf::Pipeline` 和 `RuntimeDagExecutor` 组合执行。
+这条路径已经是当前流式运行时默认主线；线性配置会先被编译成单路径静态 DAG，再交给 `PipelineExecutor` 统一执行。
 
 这里需要区分两层：
 
@@ -67,6 +67,180 @@ flowchart LR
   - `tf::Pipeline` 的技术入口，负责 token 注入和背压
 - `SourceStage`
   - 显式的运行时节点，负责把 source 也纳入 stage DAG 语义
+
+## 统一执行器设计
+
+当前运行时采用统一的 `PipelineExecutor` 架构，核心设计理念是：
+
+**线性流水线 = 单路径 DAG（特例）**
+
+### 架构层次
+
+```mermaid
+flowchart TB
+    subgraph 外层 [用户层]
+        Engine[Engine]
+        Runtime[EngineRuntime]
+    end
+    
+    subgraph 中层 [执行层]
+        PE[PipelineExecutor<br/>统一执行器]
+    end
+    
+    subgraph 内层 [实现层]
+        Router[DAG 路由器]
+        SPE1[StagePathExecutor 1]
+        SPE2[StagePathExecutor 2]
+        SPEn[StagePathExecutor N]
+    end
+    
+    subgraph 底层 [Taskflow 层]
+        TF1[tf::Pipeline 1]
+        TF2[tf::Pipeline 2]
+        TFn[tf::Pipeline N]
+    end
+    
+    Engine --> Runtime
+    Runtime --> PE
+    PE --> Router
+    Router --> SPE1
+    Router --> SPE2
+    Router --> SPEn
+    SPE1 --> TF1
+    SPE2 --> TF2
+    SPEn --> TFn
+```
+
+### 核心优势
+
+1. **简化 API**：用户只需与 `PipelineExecutor` 交互，无需判断使用哪个执行器
+2. **统一语义**：线性路径和 DAG 路由使用相同的接口
+3. **灵活扩展**：支持从简单线性到复杂 DAG 的平滑演进
+4. **性能优化**：线性路径无额外开销，DAG 路由按需创建
+
+### 组件职责
+
+**PipelineExecutor（统一执行器）**
+- 解析 DAG 配置，拆分为多个线性路径
+- 管理 `StagePathExecutor` 的生命周期
+- 实现 Branch/Join 路由逻辑
+- 处理 token 的分发和汇聚
+
+**StagePathExecutor（内部实现）**
+- 执行单条线性 stage 路径
+- 封装 `tf::Pipeline` 的调用
+- 管理 token 队列和背压
+- 触发 stage callback
+
+**使用示例：**
+
+```cpp
+yspeech::PipelineExecutor executor;
+executor.configure(builder_config, *pipeline_runtime_context_, *segment_registry_);
+executor.set_stage_callback(PipelineStageRole::Source, source_callback);
+executor.set_stage_callback(PipelineStageRole::Vad, vad_callback);
+executor.start();
+executor.push(token);
+executor.finish();
+executor.wait();
+```
+
+## 静态 DAG 设计理念
+
+**核心洞察：线性流水线 = 单路径 DAG（特例）**
+
+之前的架构存在两个独立的执行器：
+- `PipelineExecutor`：负责线性路径
+- `RuntimeDagExecutor`：负责 DAG 路由
+
+这导致调用方需要判断使用哪个执行器，增加了复杂度。
+
+**新架构：统一执行器**
+
+将 `RuntimeDagExecutor` 的功能整合到 `PipelineExecutor` 中：
+- **线性路径**：配置为单路径 DAG，内部创建 1 个 `StagePathExecutor`
+- **复杂 DAG**：配置为多路径 DAG，内部创建 N 个 `StagePathExecutor` + Branch/Join 路由
+
+### 架构层次
+
+```mermaid
+flowchart TB
+    subgraph 用户层
+        Engine[Engine]
+        Runtime[EngineRuntime]
+    end
+    
+    subgraph 执行层
+        PE[PipelineExecutor<br/>统一执行器]
+    end
+    
+    subgraph 实现层
+        Router[DAG 路由器]
+        SPE1[StagePathExecutor 1]
+        SPE2[StagePathExecutor 2]
+        SPEn[StagePathExecutor N]
+    end
+    
+    subgraph Taskflow层
+        TF1[tf::Pipeline 1]
+        TF2[tf::Pipeline 2]
+        TFn[tf::Pipeline N]
+    end
+    
+    Engine --> Runtime
+    Runtime --> PE
+    PE --> Router
+    Router --> SPE1
+    Router --> SPE2
+    Router --> SPEn
+    SPE1 --> TF1
+    SPE2 --> TF2
+    SPEn --> TFn
+```
+
+### 组件职责
+
+**PipelineExecutor（统一执行器）**
+- 解析 DAG 配置，拆分为多个线性路径
+- 管理 `StagePathExecutor` 的生命周期
+- 实现 Branch/Join 路由逻辑
+- 处理 token 的分发和汇聚
+
+**StagePathExecutor（内部实现）**
+- 执行单条线性 stage 路径
+- 封装 `tf::Pipeline` 的调用
+- 管理 token 队列和背压
+- 触发 stage callback
+
+### 核心优势
+
+1. **简化 API**：用户只需与 `PipelineExecutor` 交互，无需判断使用哪个执行器
+2. **统一语义**：线性路径和 DAG 路由使用相同的接口
+3. **灵活扩展**：支持从简单线性到复杂 DAG 的平滑演进
+4. **性能优化**：线性路径无额外开销，DAG 路由按需创建
+
+### 代码对比
+
+**重构前（需要二选一）：**
+```cpp
+const bool uses_runtime_dag = std::ranges::any_of(builder_config.recipe.stages, [](const auto& stage) {
+    return !stage.depends_on.empty() || !stage.downstream_ids.empty();
+});
+
+if (uses_runtime_dag) {
+    runtime_dag_executor_ = std::make_unique<RuntimeDagExecutor>();
+    runtime_dag_executor_->configure(builder_config, *runtime_, *registry_);
+} else {
+    pipeline_executor_ = std::make_unique<PipelineExecutor>();
+    pipeline_executor_->configure(builder_config, *runtime_, *registry_);
+}
+```
+
+**重构后（统一接口）：**
+```cpp
+pipeline_executor_ = std::make_unique<PipelineExecutor>();
+pipeline_executor_->configure(builder_config, *pipeline_runtime_context_, *segment_registry_);
+```
 
 ## 静态 DAG 设计
 
@@ -382,7 +556,7 @@ flowchart LR
 ### Runtime / Stage
 
 - `PipelineExecutor` 负责线性 stage 路径，并把执行交给 `tf::Pipeline`
-- `RuntimeDagExecutor` 负责静态 DAG 的 `Branch/Join` 路由
+- `PipelineExecutor` 负责静态 DAG 的 `Branch/Join` 路由
 - `SourceStage` 负责把入口 source 纳入显式 stage DAG
 - 领域 `Stage` 是运行时边界，`Core` 负责真实处理
 - `EventStage` 负责把运行时结果统一转换成 `EngineEvent`
@@ -394,7 +568,7 @@ flowchart LR
 
 - runtime
   - `PipelineExecutor`
-  - `RuntimeDagExecutor`
+  - `PipelineExecutor`
   - `EventStage`
 - domain
   - `domain/source/`
@@ -496,7 +670,7 @@ flowchart LR
 | `runtime.pipeline_lines` | 线性段并发 line 数 |
 | `runtime.pipeline_name` | 运行图名称 |
 
-当前 `depends_on`、`join_policy` 和 `join_timeout_ms` 已经进入 `PipelineRuntimeRecipe`，`RuntimeDagExecutor` 负责静态 DAG 上的 `Branch/Join` 路由与轻量汇聚语义。
+当前 `depends_on`、`join_policy` 和 `join_timeout_ms` 已经进入 `PipelineRuntimeRecipe`，`PipelineExecutor` 负责静态 DAG 上的 `Branch/Join` 路由与轻量汇聚语义。
 
 ### 当前仅解析或保留、未形成稳定行为的字段
 

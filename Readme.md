@@ -127,7 +127,7 @@ int main() {
 - `streaming_demo` 默认就使用这条单线 Taskflow 配置
 - `EngineRuntime` 的流式运行时已经统一切到 Taskflow 主线
 - 新运行时已支持“配置驱动、启动期构图、运行期静态 DAG”的模式
-- 线性 stage 段由 `tf::Pipeline` 执行，`Branch/Join` 由 `RuntimeDagExecutor` 负责最小路由与汇聚语义
+- 线性 stage 段由 `tf::Pipeline` 执行，`Branch/Join` 由 `PipelineExecutor` 负责最小路由与汇聚语义
 - 当前已注册 core 名称只有 `SileroVad`、`KaldiFbank`、`AsrParaformer`、`AsrSenseVoice`、`AsrWhisper`
 - 示例配置里推荐显式声明 `source_stage`；顶层 `source` 仅保留旧配置兼容
 - 顶层 `output`、`pipeline.push_chunk_samples`、`ops[].parallel` 目前不应被理解为稳定自动行为

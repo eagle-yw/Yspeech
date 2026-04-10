@@ -271,7 +271,7 @@ EngineConfigOptions > 配置文件同名字段
 
 - `pipeline_lines` 控制 Taskflow pipeline line 数
 - 单路径静态 DAG 会走单个 `PipelineExecutor`
-- 声明了 `pipelines[].depends_on` 的 DAG 配置会走 `RuntimeDagExecutor`
+- 声明了 `pipelines[].depends_on` 的 DAG 配置会走 `PipelineExecutor`
 - 当前已经支持 `Branch + Join + join_timeout_ms`
 
 ### 静态 DAG 配置要点

@@ -54,7 +54,7 @@ This document tracks the runtime refactor that unified streaming execution on th
 7. Stage/core timing from the Taskflow path is now reported into core-level performance stats.
 8. Taskflow stage-owned cores are protected against concurrent access to keep multi-run benchmarks stable.
 9. Recipe/build time preserves stage-level DAG metadata so the runtime can execute a static configurable DAG without losing configuration-driven construction.
-10. `RuntimeDagExecutor` now supports `Branch`, `Join`, `join_policy`, and lightweight `join_timeout_ms`.
+10. `PipelineExecutor` now supports `Branch`, `Join`, `join_policy`, and lightweight `join_timeout_ms`.
 
 ## Validation Snapshot
 

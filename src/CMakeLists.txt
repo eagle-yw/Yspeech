@@ -40,7 +40,7 @@ target_sources(yspeech
     yspeech/runtime/event_record.cppm
     yspeech/runtime/pipeline_recipe.cppm
     yspeech/runtime/runtime_dag.cppm
-    yspeech/runtime/runtime_dag_executor.cppm
+    yspeech/runtime/stage_path_executor.cppm
     yspeech/runtime/pipeline_builder.cppm
     yspeech/runtime/pipeline_executor.cppm
     yspeech/runtime/event_stage.cppm

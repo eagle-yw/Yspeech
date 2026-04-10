@@ -95,7 +95,7 @@ flowchart LR
 为了避免设计继续发散，建议始终记住这几个边界：
 
 - 线性段执行继续交给 `tf::Pipeline`
-- `RuntimeDagExecutor` 只做静态 DAG 路由和轻量 join 语义
+- `PipelineExecutor` 只做静态 DAG 路由和轻量 join 语义
 - 主数据面保持在 `PipelineToken + SegmentState + RuntimeContext`
 - 不为了 DAG 再发明一套独立任务系统
 

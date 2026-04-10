@@ -10,7 +10,6 @@ import yspeech.frame_source;
 import yspeech.pipeline_config;
 import yspeech.runtime.pipeline_builder;
 import yspeech.runtime.runtime_dag;
-import yspeech.runtime.runtime_dag_executor;
 import yspeech.runtime.pipeline_executor;
 import yspeech.runtime.pipeline_recipe;
 import yspeech.runtime.segment_registry;
@@ -79,7 +78,6 @@ private:
     std::optional<RuntimeContext> pipeline_runtime_context_;
     std::optional<SegmentRegistry> segment_registry_;
     std::unique_ptr<PipelineExecutor> pipeline_executor_;
-    std::unique_ptr<RuntimeDagExecutor> runtime_dag_executor_;
     std::optional<SourceStage> source_stage_;
     std::optional<VadStage> vad_stage_;
     std::optional<FeatureStage> feature_stage_;
@@ -205,9 +203,7 @@ void EngineRuntime::start() {
     }
     emit_status("started");
 
-    if (runtime_dag_executor_) {
-        runtime_dag_executor_->start();
-    } else if (pipeline_executor_) {
+    if (pipeline_executor_) {
         pipeline_executor_->start();
     }
 
@@ -319,9 +315,7 @@ void EngineRuntime::stop() {
 
     phase_start = std::chrono::steady_clock::now();
     finalize_stream_if_needed();
-    if (runtime_dag_executor_) {
-        runtime_dag_executor_->stop();
-    } else if (pipeline_executor_) {
+    if (pipeline_executor_) {
         pipeline_executor_->stop();
     }
     stop_finalize_stream_ms_ = std::chrono::duration<double, std::milli>(
@@ -500,20 +494,9 @@ void EngineRuntime::init_components() {
         segment_registry_.emplace();
 
         auto builder_config = make_pipeline_builder_config(pipeline_config_, config_);
-        const bool uses_runtime_dag =
-            std::ranges::any_of(builder_config.recipe.stages, [](const auto& stage) {
-                return !stage.depends_on.empty() || !stage.downstream_ids.empty();
-            });
 
-        pipeline_executor_.reset();
-        runtime_dag_executor_.reset();
-        if (uses_runtime_dag) {
-            runtime_dag_executor_ = std::make_unique<RuntimeDagExecutor>();
-            runtime_dag_executor_->configure(builder_config, *pipeline_runtime_context_, *segment_registry_);
-        } else {
-            pipeline_executor_ = std::make_unique<PipelineExecutor>();
-            pipeline_executor_->configure(builder_config, *pipeline_runtime_context_, *segment_registry_);
-        }
+        pipeline_executor_ = std::make_unique<PipelineExecutor>();
+        pipeline_executor_->configure(builder_config, *pipeline_runtime_context_, *segment_registry_);
 
         source_stage_.emplace();
         vad_stage_.emplace();
@@ -620,13 +603,7 @@ void EngineRuntime::init_components() {
             }
         };
 
-        if (runtime_dag_executor_) {
-            runtime_dag_executor_->set_stage_callback(PipelineStageRole::Source, source_callback);
-            runtime_dag_executor_->set_stage_callback(PipelineStageRole::Vad, vad_callback);
-            runtime_dag_executor_->set_stage_callback(PipelineStageRole::Feature, feature_callback);
-            runtime_dag_executor_->set_stage_callback(PipelineStageRole::Asr, asr_callback);
-            runtime_dag_executor_->set_stage_callback(PipelineStageRole::Event, event_callback);
-        } else if (pipeline_executor_) {
+        if (pipeline_executor_) {
             pipeline_executor_->set_stage_callback(PipelineStageRole::Source, source_callback);
             pipeline_executor_->set_stage_callback(PipelineStageRole::Vad, vad_callback);
             pipeline_executor_->set_stage_callback(PipelineStageRole::Feature, feature_callback);
@@ -746,16 +723,12 @@ void EngineRuntime::ingest_frame(AudioFramePtr frame) {
     token.eos = frame->eos;
     token.kind = frame->eos ? PipelineTokenKind::EndOfStream : PipelineTokenKind::AudioWindow;
     token.audio = frame->samples;
-    if (runtime_dag_executor_) {
-        runtime_dag_executor_->push(std::move(token));
-    } else if (pipeline_executor_) {
+    if (pipeline_executor_) {
         pipeline_executor_->push(std::move(token));
     }
     if (frame->eos) {
         stream_finalized_.store(true, std::memory_order_release);
-        if (runtime_dag_executor_) {
-            runtime_dag_executor_->finish();
-        } else if (pipeline_executor_) {
+        if (pipeline_executor_) {
             pipeline_executor_->finish();
         }
     }
@@ -772,18 +745,12 @@ void EngineRuntime::finalize_stream_if_needed() {
     if (!input_eof_seen_.exchange(true, std::memory_order_acq_rel)) {
         input_eof_time_ = std::chrono::steady_clock::now();
     }
-    if (runtime_dag_executor_) {
-        runtime_dag_executor_->finish();
-    } else if (pipeline_executor_) {
+    if (pipeline_executor_) {
         pipeline_executor_->finish();
     }
 }
 
 void EngineRuntime::await_pipeline_drain_if_needed() {
-    if (runtime_dag_executor_) {
-        runtime_dag_executor_->wait();
-        return;
-    }
     if (pipeline_executor_) {
         pipeline_executor_->wait();
     }

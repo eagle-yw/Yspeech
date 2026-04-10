@@ -21,7 +21,6 @@ export import yspeech.runtime.stage_support;
 export import yspeech.runtime.event_record;
 export import yspeech.runtime.pipeline_recipe;
 export import yspeech.runtime.runtime_dag;
-export import yspeech.runtime.runtime_dag_executor;
 export import yspeech.runtime.pipeline_builder;
 export import yspeech.runtime.pipeline_executor;
 export import yspeech.runtime.event_stage;

@@ -107,7 +107,7 @@
 - `merge_stage` 使用 `join_policy = all_of`
 - `Vad / Feature / ASR` 参数沿用当前 Taskflow 主线口径
 - `asr_stage` 在 join 后继续处理
-- 用来验证 `RuntimeDagExecutor + tf::Pipeline` 的组合路径
+- 用来验证 `PipelineExecutor + tf::Pipeline` 的组合路径
 - `asr_stage` 同样沿用主线的保守门控阈值
 
 ### `streaming_paraformer_asr_dag_timeout.json`

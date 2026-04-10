@@ -676,7 +676,7 @@ TEST(PipelineRuntime, BuiltinAlertCapabilityEmitsConfiguredAlert) {
 }
 
 
-TEST(PipelineRuntime, RuntimeDagExecutorRoutesBranchOutputs) {
+TEST(PipelineRuntime, PipelineExecutorRoutesBranchOutputs) {
     nlohmann::json config = {
         {"name", "streaming_branch"},
         {"runtime", {{"pipeline_lines", 2}}},
@@ -720,7 +720,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesBranchOutputs) {
 
     yspeech::RuntimeContext runtime;
     yspeech::SegmentRegistry registry;
-    yspeech::RuntimeDagExecutor executor;
+    yspeech::PipelineExecutor executor;
     executor.configure(builder_config, runtime, registry);
 
     std::mutex mutex;
@@ -743,7 +743,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesBranchOutputs) {
         std::lock_guard lock(mutex);
         ++asr_calls;
     });
-    executor.set_terminal_callback([&](const yspeech::PipelineToken& token, yspeech::RuntimeContext&, yspeech::SegmentRegistry&) {
+    executor.set_completion_callback([&](const yspeech::PipelineToken& token, yspeech::RuntimeContext&, yspeech::SegmentRegistry&) {
         std::lock_guard lock(mutex);
         ++terminal_calls;
         if (token.eos && terminal_calls >= 4) {
@@ -779,7 +779,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesBranchOutputs) {
     EXPECT_EQ(terminal_calls, 4);
 }
 
-TEST(PipelineRuntime, RuntimeDagExecutorRoutesJoinOutputs) {
+TEST(PipelineRuntime, PipelineExecutorRoutesJoinOutputs) {
     nlohmann::json config = {
         {"name", "streaming_join"},
         {"runtime", {{"pipeline_lines", 2}}},
@@ -839,7 +839,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesJoinOutputs) {
 
     yspeech::RuntimeContext runtime;
     yspeech::SegmentRegistry registry;
-    yspeech::RuntimeDagExecutor executor;
+    yspeech::PipelineExecutor executor;
     executor.configure(builder_config, runtime, registry);
 
     std::mutex mutex;
@@ -865,7 +865,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesJoinOutputs) {
         ++asr_calls;
         asr_feature_versions.push_back(token.feature_version);
     });
-    executor.set_terminal_callback([&](const yspeech::PipelineToken& token, yspeech::RuntimeContext&, yspeech::SegmentRegistry&) {
+    executor.set_completion_callback([&](const yspeech::PipelineToken& token, yspeech::RuntimeContext&, yspeech::SegmentRegistry&) {
         std::lock_guard lock(mutex);
         if (token.eos && asr_calls >= 2) {
             cv.notify_all();
@@ -902,7 +902,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesJoinOutputs) {
     }));
 }
 
-TEST(PipelineRuntime, RuntimeDagExecutorRoutesAnyOfJoinOutputs) {
+TEST(PipelineRuntime, PipelineExecutorRoutesAnyOfJoinOutputs) {
     nlohmann::json config = {
         {"name", "streaming_join_any_of"},
         {"runtime", {{"pipeline_lines", 2}}},
@@ -955,7 +955,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesAnyOfJoinOutputs) {
 
     yspeech::RuntimeContext runtime;
     yspeech::SegmentRegistry registry;
-    yspeech::RuntimeDagExecutor executor;
+    yspeech::PipelineExecutor executor;
     executor.configure(builder_config, runtime, registry);
 
     std::mutex mutex;
@@ -999,7 +999,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesAnyOfJoinOutputs) {
     EXPECT_GE(asr_calls, 1);
 }
 
-TEST(PipelineRuntime, RuntimeDagExecutorRoutesTimedOutAllOfJoinOutputs) {
+TEST(PipelineRuntime, PipelineExecutorRoutesTimedOutAllOfJoinOutputs) {
     nlohmann::json config = {
         {"name", "streaming_join_timeout_runtime"},
         {"runtime", {{"pipeline_lines", 2}}},
@@ -1053,7 +1053,7 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesTimedOutAllOfJoinOutputs) {
 
     yspeech::RuntimeContext runtime;
     yspeech::SegmentRegistry registry;
-    yspeech::RuntimeDagExecutor executor;
+    yspeech::PipelineExecutor executor;
     executor.configure(builder_config, runtime, registry);
 
     std::mutex mutex;
@@ -1090,4 +1090,29 @@ TEST(PipelineRuntime, RuntimeDagExecutorRoutesTimedOutAllOfJoinOutputs) {
 
     executor.stop();
     EXPECT_GE(asr_calls, 1);
+}
+
+TEST(PipelineRuntime, PipelineExecutorRejectsConfigureWhileRunning) {
+    nlohmann::json config = {
+        {"name", "streaming_linear"},
+        {"runtime", {{"pipeline_lines", 1}}},
+        {"source", {{"type", "stream"}}},
+        {"pipelines", {{
+            {"id", "source_stage"},
+            {"ops", {{{"id", "source"}, {"name", "StreamSource"}}}}
+        }}}
+    };
+
+    auto pipeline_config = yspeech::PipelineConfig::from_json(config);
+    auto builder_config = yspeech::make_pipeline_builder_config(pipeline_config, config);
+
+    yspeech::RuntimeContext runtime;
+    yspeech::SegmentRegistry registry;
+    yspeech::PipelineExecutor executor;
+    executor.configure(builder_config, runtime, registry);
+    executor.start();
+
+    EXPECT_THROW(executor.configure(builder_config, runtime, registry), std::runtime_error);
+
+    executor.stop();
 }

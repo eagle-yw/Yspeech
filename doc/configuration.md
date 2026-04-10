@@ -170,7 +170,7 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
 - 推荐显式声明 `source_stage`
 - 如果没有显式声明 `source_stage`，运行时仍会根据旧顶层 `source` 兼容性地注入内部 `SourceStage`
 - `depends_on` 会在启动期编译成静态 DAG，运行期结构不再变化
-- 线性子路径由 `tf::Pipeline` 执行，`Branch/Join` 由 `RuntimeDagExecutor` 处理
+- 线性子路径由 `tf::Pipeline` 执行，`Branch/Join` 由 `PipelineExecutor` 处理
 
 ### join_policy
 

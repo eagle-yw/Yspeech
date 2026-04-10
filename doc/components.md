@@ -41,30 +41,34 @@ engine.stop();
 - 加载配置并应用日志级别
 - 创建 source、runtime 执行器与事件线程
 - 决定 `source_stage.ops[0].name` 对应的输入源实现
-- 在线性配置下驱动 `PipelineExecutor`
-- 在声明了 stage 依赖的配置下驱动 `RuntimeDagExecutor`
+- 驱动 `PipelineExecutor` 执行（统一处理线性和 DAG）
 - 汇总性能统计并发出 `input_eof` / `stream_drained`
 
-## 3. PipelineExecutor / RuntimeDagExecutor / EventStage
+## 3. PipelineExecutor / StagePathExecutor / EventStage
 
-当前推荐主线由两层执行器组成：
+当前推荐主线由统一的执行器组成：
 
 ```cpp
-yspeech::PipelineExecutor linear_executor;
-yspeech::RuntimeDagExecutor dag_executor;
+yspeech::PipelineExecutor executor;
 ```
 
 职责：
 
-- `PipelineExecutor` 负责线性 stage 路径，并把执行交给 `tf::Pipeline`
-- `RuntimeDagExecutor` 负责静态 DAG 的 `Branch/Join` 路由
+- `PipelineExecutor` 负责统一执行，支持线性路径和 DAG 路由
+  - 解析 DAG 配置，拆分为多个线性路径
+  - 管理 `StagePathExecutor` 的生命周期
+  - 实现 Branch/Join 路由逻辑
+- `StagePathExecutor` 负责单条线性路径的执行（内部实现）
+  - 封装 `tf::Pipeline` 的调用
+  - 管理 token 队列和背压
+  - 触发 stage callback
 - `EventStage` 负责把 runtime 结果统一派发成 `EngineEvent`
 - stage callback 由执行器绑定到 `SourceStage / VadStage / FeatureStage / AsrStage / EventStage`
 
 限制：
 
 - `parallel` 不直接驱动调度
-- `RuntimeDagExecutor` 只补最小静态 DAG 语义，不替代 `Taskflow`
+- `PipelineExecutor` 的 DAG 路由层只补最小静态 DAG 语义，不替代 `Taskflow`
 - `pipelines[].input/output` 当前不是完整的数据路由实现
 
 ## 4. 领域 Stage / Core
@@ -82,6 +86,7 @@ yspeech::RuntimeDagExecutor dag_executor;
   - 负责 token、segment、事件时机、运行时语义
 - `Core`
   - 负责真实算法与内部状态机
+
 当前对应关系：
 
 - `SourceStage -> PassThroughSourceCore / FileSource / MicrophoneSource / StreamSource`
@@ -97,8 +102,8 @@ yspeech::RuntimeDagExecutor dag_executor;
 
 其中包含：
 
-- `PipelineExecutor`
-- `RuntimeDagExecutor`
+- `PipelineExecutor`（统一执行器）
+- `StagePathExecutor`（内部实现）
 - `EventStage`
 - `RuntimeContext`
 - `PipelineToken`
@@ -120,7 +125,7 @@ segment.audio_accumulated = samples;
 
 ## 6. Core 注册系统
 
-当前主线保留了“按名字注册、按配置创建”的扩展思路，但注册目标已经收敛到领域 core：
+当前主线保留了"按名字注册、按配置创建"的扩展思路，但注册目标已经收敛到领域 core：
 
 - `VadCoreFactory`
 - `FeatureCoreFactory`
@@ -136,6 +141,25 @@ segment.audio_accumulated = samples;
 
 运行时在构建 stage 时，会根据配置里的 `ops[].name` 选择对应 core。
 
+## 7. Stage Adapter 模式
+
+`StageAdapter` 是新增的横切关注点管理层：
+
+```cpp
+yspeech::StageAdapter adapter;
+adapter.init(config, core_id);
+auto result = adapter.run(runtime, [&]() {
+    return core->process_samples(audio, eos);
+});
+```
+
+职责：
+
+- 管理 Aspect（TimerAspect、LoggerAspect）
+- 管理 Capability（Pre/Post 阶段）
+- 统一 Stage -> Core 调用边界
+- 提供性能统计和日志记录
+
 ## 8. Capability 系统
 
 能力扩展：
@@ -148,87 +172,11 @@ install("LogCapability", {{"message", "before feature stage"}});
 职责：
 
 - 给处理节点注入前后置行为
-- 支持节点级和 global 级 capability
-- 当前在 `Stage -> Core` 边界自动安装并执行
-- 适合做“按配置启停”的节点扩展
-- 不负责定义默认 Performance 统计口径
+- 支持配置驱动的扩展
+- 区分 `Pre` / `Post` 两个执行阶段
 
-当前内置 capability：
+说明：
 
-- `AlertCapability`
-  - 通过 `RuntimeContext.emit_alert` 发告警
-- `StatusCapability`
-  - 通过 `RuntimeContext.emit_status` 发状态
-- `LogCapability`
-  - 通过日志输出一条配置化消息
-
-## 9. Aspect 系统
-
-AOP 切面编程：
-
-当前 `Stage` 默认会注入 `TimerAspect`，配置里声明 `LoggerAspect` 时会一起挂到 `Stage -> Core` 边界。
-
-职责：
-
-- 处理框架级横切关注点
-- 统一覆盖 `Stage -> Core` 调用边界
-- 适合做计时、tracing、统一日志、性能统计
-- 当前 `streaming_demo` 的 Performance 数据主来源是 `TimerAspect`
-
-## 9.1 通用 Profiling 方案
-
-当前默认性能主链只统计到 `Stage -> Core` 边界总耗时。为了继续分析热点 core 的内部成本，系统需要第二层 profiling：
-
-- 第一层：`TimerAspect`
-  - 统计整个 core 调用时间
-- 第二层：`Core internal profiling`
-  - 统计 core 内部阶段时间
-  - 例如：
-    - `pack_partial`
-    - `run_partial`
-    - `decode_partial`
-    - `pack_final`
-    - `run_final`
-    - `decode_final`
-
-这套 profiling 的职责分工如下：
-
-- `Aspect`
-  - 负责边界级耗时
-- `Core`
-  - 负责内部 phase 耗时采集
-- `Capability`
-  - 负责消费 profiling 数据做日志、导出、状态或告警
-
-这意味着：
-
-- `Capability` 可以参与 profiling 体系
-- 但它不负责默认采样
-- 默认采样仍由 `TimerAspect + Core 内部 phase record` 完成
-
-当前主线已经能直接看出：
-
-- `asr/run` 是绝对热点
-- `run_final` 往往重于 `run_partial`
-- `pack/decode` 目前只是边角开销
-
-## 10. Aspect 与 Capability 的边界
-
-两者都会挂在 `Stage -> Core` 边界，所以都有横切能力，但职责不同：
-
-- `Aspect`
-  - 框架级 AOP
-  - 适合默认启用或由运行时统一管理的行为
-  - 例如：`TimerAspect`、统一 tracing、统一日志
-- `Capability`
-  - 配置驱动的节点扩展
-  - 适合按配置启停、按节点细粒度安装的行为
-  - 例如：某个节点额外发状态、打审计标记、发告警
-
-推荐原则：
-
-- 框架统一关注点优先放 `Aspect`
-- 需要通过配置启停的节点扩展优先放 `Capability`
-- 不要同时为同一件事提供一套 `Aspect` 和一套 `Capability`
-
-详细配置边界见 [configuration.md](/Users/eagle/workspace/Playground/Yspeech/doc/configuration.md)。
+- Capability 只负责消费 profiling 数据，不负责定义默认统计口径
+- 默认性能统计由 `TimerAspect` 提供
+- Capability 可以读取 `RuntimeContext.stats` 中的数据
