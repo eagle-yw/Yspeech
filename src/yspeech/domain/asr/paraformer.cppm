@@ -20,6 +20,7 @@ public:
         if (config.contains("model_path")) {
             model_path_ = config["model_path"].get<std::string>();
         }
+        min_partial_frames_ = std::max(1, config.value("min_partial_frames", min_partial_frames_));
         init_onnx_session();
         load_tokens();
     }
@@ -29,9 +30,8 @@ public:
     }
 
     auto decode_partial(const std::string& stream_id, const FeatureSequenceView& full_context) -> AsrResult override {
-        if (auto it = stream_states_.find(stream_id);
-            it != stream_states_.end() && it->second.chunks && !it->second.chunks->empty()) {
-            return infer_with_mode(FeatureSequenceView::from_chunk_list(it->second.chunks, it->second.feature_count), "partial");
+        if (auto state_features = feature_view_from_stream_state(stream_id); !state_features.empty()) {
+            return infer_with_mode(state_features, "partial");
         }
         return infer_with_mode(full_context, "partial");
     }
@@ -42,41 +42,132 @@ public:
     }
 
 private:
-    auto infer_with_mode(const FeatureSequenceView& features, std::string_view mode) -> AsrResult {
-        using clock = std::chrono::steady_clock;
-        const auto infer_start = clock::now();
-        AsrResult result;
+    struct StreamState {
+        std::shared_ptr<FeatureChunkList> chunks = std::make_shared<FeatureChunkList>();
+        int feature_count = 0;
+    };
 
-        if (!session_ || features.empty()) {
-            result.text = "";
-            result.confidence = 0.0f;
-            return result;
+    static auto is_recoverable_shape_error(std::string_view message) -> bool {
+        return message.find("The input tensor cannot be reshaped to the requested shape") != std::string_view::npos ||
+               message.find("Input shape:{0,512}") != std::string_view::npos ||
+               message.find("input_shape_size == size was false") != std::string_view::npos ||
+               message.find("Reshape_6679") != std::string_view::npos ||
+               message.find("Loop_6591") != std::string_view::npos;
+    }
+
+    static auto count_frames(const FeatureChunkListPtr& chunks) -> int {
+        if (!chunks) {
+            return 0;
         }
 
-        int num_frames = features.feature_count;
-        int feat_dim = features.feature_dim();
-        if (num_frames <= 0 || feat_dim <= 0) {
-            result.text = "";
-            result.confidence = 0.0f;
-            return result;
+        int total_frames = 0;
+        for (const auto& chunk : *chunks) {
+            if (!chunk || chunk->empty()) {
+                continue;
+            }
+            total_frames += static_cast<int>(chunk->size());
         }
-        const auto flattened_size = static_cast<std::size_t>(num_frames * feat_dim);
-        input_buffer_.resize(flattened_size);
-        float* dst = input_buffer_.data();
+        return total_frames;
+    }
+
+    auto feature_view_from_stream_state(const std::string& stream_id) const -> FeatureSequenceView {
+        auto it = stream_states_.find(stream_id);
+        if (it == stream_states_.end() || !it->second.chunks) {
+            return {};
+        }
+
+        const int actual_frames = count_frames(it->second.chunks);
+        if (actual_frames <= 0) {
+            return {};
+        }
+
+        return FeatureSequenceView::from_chunk_list(it->second.chunks, actual_frames);
+    }
+
+    void ensure_unique_stream_chunks(StreamState& state) {
+        if (!state.chunks) {
+            state.chunks = std::make_shared<FeatureChunkList>();
+            return;
+        }
+        if (state.chunks.use_count() > 1) {
+            state.chunks = std::make_shared<FeatureChunkList>(*state.chunks);
+        }
+    }
+
+    auto append_non_empty_chunks(StreamState& state, const FeatureChunkListPtr& chunks) -> int {
+        if (!chunks) {
+            return 0;
+        }
+
+        ensure_unique_stream_chunks(state);
+
+        int appended_frames = 0;
+        for (const auto& chunk : *chunks) {
+            if (!chunk || chunk->empty()) {
+                continue;
+            }
+            state.chunks->push_back(chunk);
+            appended_frames += static_cast<int>(chunk->size());
+        }
+        return appended_frames;
+    }
+
+    auto pack_features(const FeatureSequenceView& features, int feat_dim) -> int {
+        input_buffer_.clear();
+        if (!features.chunks || feat_dim <= 0) {
+            return 0;
+        }
+
+        input_buffer_.reserve(static_cast<std::size_t>(std::max(features.feature_count, 0) * feat_dim));
+        int packed_frames = 0;
         for (const auto& chunk : *features.chunks) {
             if (!chunk || chunk->empty()) {
                 continue;
             }
             for (const auto& frame : *chunk) {
-                std::copy(frame.begin(), frame.end(), dst);
-                dst += feat_dim;
+                input_buffer_.insert(input_buffer_.end(), frame.begin(), frame.end());
+                ++packed_frames;
             }
         }
+        return packed_frames;
+    }
+
+    auto infer_with_mode(const FeatureSequenceView& features, std::string_view mode) -> AsrResult {
+        using clock = std::chrono::steady_clock;
+        const auto infer_start = clock::now();
+        AsrResult result;
+
+        if (!session_ || features.empty() || !features.chunks) {
+            result.text = "";
+            result.confidence = 0.0f;
+            return result;
+        }
+
+        int feat_dim = features.feature_dim();
+        if (feat_dim <= 0) {
+            result.text = "";
+            result.confidence = 0.0f;
+            return result;
+        }
+
+        const int packed_frames = pack_features(features, feat_dim);
+        if (packed_frames <= 0) {
+            result.text = "";
+            result.confidence = 0.0f;
+            return result;
+        }
+
+        if (mode == "partial" && packed_frames < min_partial_frames_) {
+            result.text = "";
+            result.confidence = 0.0f;
+            return result;
+        }
+
         const auto after_pack = clock::now();
 
-        const std::array<int64_t, 3> input_shape = {1, num_frames, feat_dim};
+        const std::array<int64_t, 3> input_shape = {1, packed_frames, feat_dim};
         const std::array<int64_t, 1> length_shape = {1};
-        std::array<int32_t, 1> length_data = {num_frames};
+        std::array<int32_t, 1> length_data = {packed_frames};
 
         try {
             Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
@@ -145,7 +236,11 @@ private:
                 runtime_stats_->record_core_phase_time(core_id_, std::format("decode_{}", mode), decode_ms);
             }
         } catch (const Ort::Exception& e) {
-            log_error("ONNX Runtime error: {}", e.what());
+            if (is_recoverable_shape_error(e.what())) {
+                log_debug("Skipping paraformer {} decode for degenerate context: {}", mode, e.what());
+            } else {
+                log_error("ONNX Runtime error: {}", e.what());
+            }
             result.text.clear();
             result.confidence = 0.0f;
         }
@@ -166,18 +261,7 @@ public:
             return;
         }
         auto& state = stream_states_[stream_id];
-        if (!state.chunks) {
-            state.chunks = std::make_shared<FeatureChunkList>();
-        } else if (state.chunks.use_count() > 1) {
-            state.chunks = std::make_shared<FeatureChunkList>(*state.chunks);
-        }
-        for (const auto& chunk : *delta_features.chunks) {
-            if (!chunk || chunk->empty()) {
-                continue;
-            }
-            state.chunks->push_back(chunk);
-        }
-        state.feature_count += delta_features.feature_count;
+        state.feature_count += append_non_empty_chunks(state, delta_features.chunks);
     }
 
     void reset_stream(const std::string& stream_id) override {
@@ -198,18 +282,14 @@ public:
     }
 
 private:
-    struct StreamState {
-        std::shared_ptr<FeatureChunkList> chunks = std::make_shared<FeatureChunkList>();
-        int feature_count = 0;
-    };
-
     void init_onnx_session() {
-        Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "yspeech_paraformer");
+        Ort::Env env(ORT_LOGGING_LEVEL_FATAL, "yspeech_paraformer");
         env_ = std::make_unique<Ort::Env>(std::move(env));
         Ort::SessionOptions session_options;
         session_options.SetIntraOpNumThreads(num_threads_);
         session_options.SetInterOpNumThreads(1);
         session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        session_options.SetLogSeverityLevel(4);
         append_coreml_provider(session_options);
         session_ = std::make_unique<Ort::Session>(*env_, model_path_.c_str(), session_options);
         memory_info_ = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
@@ -266,6 +346,7 @@ private:
     double infer_run_ms_ = 0.0;
     double infer_decode_ms_ = 0.0;
     std::size_t infer_calls_ = 0;
+    int min_partial_frames_ = 8;
     ProcessingStats* runtime_stats_ = nullptr;
 };
 
