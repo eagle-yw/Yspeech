@@ -83,12 +83,17 @@ TEST(PipelineRuntime, RecipeInferenceFromPipelineConfig) {
     EXPECT_EQ(source_stage->stage_id, "source_stage");
     ASSERT_EQ(source_stage->core_names.size(), 1u);
     EXPECT_EQ(source_stage->core_names.front(), "FileSource");
+    EXPECT_EQ(source_stage->init_params.value("__core_id", std::string{}), "source");
+    EXPECT_EQ(source_stage->init_params.value("core_name", std::string{}), "FileSource");
+    EXPECT_EQ(source_stage->init_params.value("path", std::string{}), "audio.wav");
 
     const auto* vad_stage = builder_config.recipe.stage_by_role(yspeech::PipelineStageRole::Vad);
     ASSERT_NE(vad_stage, nullptr);
     EXPECT_EQ(vad_stage->stage_id, "vad_stage");
     EXPECT_EQ(vad_stage->max_concurrency, 1u);
     EXPECT_EQ(vad_stage->depends_on, std::vector<std::string>({"source_stage"}));
+    EXPECT_EQ(vad_stage->init_params.value("__core_id", std::string{}), "vad");
+    EXPECT_EQ(vad_stage->init_params.value("core_name", std::string{}), "SileroVad");
 
     const auto* feature_stage = builder_config.recipe.stage_by_role(yspeech::PipelineStageRole::Feature);
     ASSERT_NE(feature_stage, nullptr);
@@ -156,6 +161,8 @@ TEST(PipelineRuntime, ExplicitSourceStageIsRecognizedAsSourceRole) {
     ASSERT_NE(source_stage, nullptr);
     EXPECT_EQ(source_stage->stage_id, "capture_stage");
     EXPECT_EQ(source_stage->core_names.front(), "PassThroughSource");
+    EXPECT_EQ(source_stage->init_params.value("__core_id", std::string{}), "capture");
+    EXPECT_EQ(source_stage->init_params.value("core_name", std::string{}), "PassThroughSource");
 }
 
 TEST(PipelineRuntime, InvalidJoinPolicyIsRejectedByPipelineConfig) {
@@ -492,6 +499,45 @@ TEST(PipelineRuntime, FeatureStageBuildsSegmentFeatureData) {
     }
     EXPECT_FALSE(token.feature_frames.empty());
     EXPECT_GT(token.feature_version, 0u);
+}
+
+TEST(PipelineRuntime, FeatureStageRecordsCorePhaseTimings) {
+    yspeech::SegmentRegistry registry;
+    auto segment = registry.create_segment("default", 0);
+    {
+        std::lock_guard lock(segment->mutex);
+        segment->audio_accumulated.assign(16000, 0.1f);
+        segment->end_ms = 1000;
+        segment->lifecycle = yspeech::SegmentLifecycle::Closed;
+    }
+
+    yspeech::FeatureStage stage;
+    nlohmann::json config = {
+        {"__core_id", "fbank"},
+        {"sample_rate", 16000},
+        {"num_bins", 80},
+        {"frame_length_ms", 25.0},
+        {"frame_shift_ms", 10.0}
+    };
+    stage.init(config);
+
+    yspeech::ProcessingStats stats;
+    stage.bind_stats(&stats);
+
+    yspeech::RuntimeContext runtime;
+    yspeech::PipelineToken token;
+    token.stream_id = "default";
+    token.segment_id = segment->segment_id;
+    token.kind = yspeech::PipelineTokenKind::SegmentFinal;
+    token.audio.assign(16000, 0.1f);
+    token.eos = true;
+
+    stage.process(token, runtime, registry);
+    stage.deinit();
+
+    EXPECT_TRUE(stats.core_timings.contains("fbank"));
+    EXPECT_TRUE(stats.core_phase_timings.contains("fbank:extract"));
+    EXPECT_TRUE(stats.core_phase_timings.contains("fbank:lfr"));
 }
 
 TEST(PipelineRuntime, StageCapabilitiesRunAroundCoreProcessing) {

@@ -5,6 +5,7 @@ module;
 export module yspeech.domain.feature.base;
 
 import std;
+import yspeech.types;
 
 namespace yspeech {
 
@@ -24,6 +25,9 @@ public:
     virtual void init(const nlohmann::json& config) = 0;
     virtual auto process_samples(std::span<const float> samples, bool eos = false)
         -> std::optional<KaldiFbankOutput> = 0;
+    virtual void bind_stats(ProcessingStats* stats) {
+        (void)stats;
+    }
     virtual void deinit() = 0;
 };
 

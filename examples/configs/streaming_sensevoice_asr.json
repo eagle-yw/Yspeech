@@ -6,12 +6,8 @@
   "mode": "streaming",
   "runtime": {
     "pipeline_lines": 2,
-    "pipeline_name": "yspeech.taskflow.streaming"
-  },
-  "source": {
-    "type": "file",
-    "path": "model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/test_wavs/zh.wav",
-    "playback_rate": 0.0
+    "pipeline_name": "yspeech.taskflow.streaming",
+    "asr_core_pool_size": 2
   },
   "frame": {
     "sample_rate": 16000,
@@ -28,7 +24,11 @@
       "ops": [
         {
           "id": "source",
-          "name": "FileSource"
+          "name": "FileSource",
+          "params": {
+            "path": "__AUDIO_PATH__",
+            "playback_rate": 0.0
+          }
         }
       ]
     },

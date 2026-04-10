@@ -197,16 +197,18 @@ private:
             config["log_level"] = *options.log_level;
         }
         if (options.audio_path.has_value()) {
-            if (config.contains("source") && config["source"].is_object() &&
-                config["source"].contains("path") && config["source"]["path"].is_string()) {
-                const auto configured_path = config["source"]["path"].get<std::string>();
+            auto source_config = read_source_config(config);
+            if (source_config.contains("path") && source_config["path"].is_string()) {
+                const auto configured_path = source_config["path"].get<std::string>();
                 const auto& override_path = *options.audio_path;
-                if (configured_path != override_path) {
-                log_warn(
-                    "Overriding source.path from config ({}) with EngineConfigOptions.audio_path ({})",
-                    configured_path,
-                    override_path
-                );
+                if (!configured_path.empty() &&
+                    configured_path != "__AUDIO_PATH__" &&
+                    configured_path != override_path) {
+                    log_warn(
+                        "Overriding source path from config ({}) with EngineConfigOptions.audio_path ({})",
+                        configured_path,
+                        override_path
+                    );
                 }
             }
             apply_file_source_override(config, *options.audio_path, options.playback_rate);

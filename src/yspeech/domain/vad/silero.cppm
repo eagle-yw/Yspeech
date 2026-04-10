@@ -24,6 +24,7 @@ public:
 
     void init(const nlohmann::json& config) override {
         try {
+            core_id_ = config.value("__core_id", core_id_);
             validate_and_load_config(config);
             init_onnx_session();
             reset_state();
@@ -38,6 +39,8 @@ public:
     }
 
     auto process_samples(std::span<const float> samples, bool eos = false) -> SileroVadChunkResult override {
+        using clock = std::chrono::steady_clock;
+        const auto begin = clock::now();
         pending_samples_.insert(pending_samples_.end(), samples.begin(), samples.end());
 
         SileroVadChunkResult result;
@@ -92,7 +95,12 @@ public:
             result.is_speech = is_speech_;
         }
 
+        record_total_time(begin, clock::now());
         return result;
+    }
+
+    void bind_stats(ProcessingStats* stats) override {
+        runtime_stats_ = stats;
     }
 
     void deinit() override {
@@ -308,6 +316,8 @@ private:
     }
 
     auto infer(const std::vector<float>& audio_chunk) -> float {
+        using clock = std::chrono::steady_clock;
+        const auto pack_begin = clock::now();
         std::vector<int64_t> input_shape = {1, static_cast<int64_t>(audio_chunk.size())};
         std::vector<int64_t> sr_shape = {1};
 
@@ -358,6 +368,7 @@ private:
         add_output(h_output_idx_, h_output_name_);
         add_output(c_output_idx_, c_output_name_);
 
+        const auto after_pack = clock::now();
         auto outputs = session_->Run(
             Ort::RunOptions{nullptr},
             input_names.data(),
@@ -366,6 +377,7 @@ private:
             output_names.data(),
             output_names.size()
         );
+        const auto after_run = clock::now();
 
         float probability = 0.0f;
         for (size_t i = 0; i < outputs.size() && i < output_name_indices.size(); ++i) {
@@ -388,13 +400,20 @@ private:
             }
         }
 
+        const auto after_decode = clock::now();
+        record_phase_time("pack", pack_begin, after_pack);
+        record_phase_time("run", after_pack, after_run);
+        record_phase_time("decode", after_run, after_decode);
         return probability;
     }
 
     auto process_window(const std::vector<float>& audio_chunk) -> SileroVadChunkResult {
+        using clock = std::chrono::steady_clock;
         SileroVadChunkResult result;
         const float probability = infer(audio_chunk);
+        const auto state_begin = clock::now();
         update_state(probability, audio_chunk.size());
+        record_phase_time("state", state_begin, clock::now());
 
         result.probability = probability;
         result.is_speech = is_speech_;
@@ -520,6 +539,36 @@ private:
     float current_segment_confidence_ = 0.0f;
     int segment_sample_count_ = 0;
     bool segment_finished_ = false;
+    ProcessingStats* runtime_stats_ = nullptr;
+    std::string core_id_ = "vad";
+
+    void record_total_time(
+        const std::chrono::steady_clock::time_point& begin,
+        const std::chrono::steady_clock::time_point& end
+    ) const {
+        if (runtime_stats_ == nullptr) {
+            return;
+        }
+        runtime_stats_->record_core_time(
+            core_id_,
+            std::chrono::duration<double, std::milli>(end - begin).count()
+        );
+    }
+
+    void record_phase_time(
+        const std::string& phase,
+        const std::chrono::steady_clock::time_point& begin,
+        const std::chrono::steady_clock::time_point& end
+    ) const {
+        if (runtime_stats_ == nullptr) {
+            return;
+        }
+        runtime_stats_->record_core_phase_time(
+            core_id_,
+            phase,
+            std::chrono::duration<double, std::milli>(end - begin).count()
+        );
+    }
 };
 
 namespace {

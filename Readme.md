@@ -25,8 +25,13 @@ cmake --build build
 ```bash
 ./build/examples/simple_transcribe \
   examples/configs/offline_paraformer_asr.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+  <音频文件>
 ```
+
+说明：
+
+- 示例 JSON 里的 `FileSource` 路径默认使用 `__AUDIO_PATH__` 占位
+- 推荐在运行时通过命令行参数或 `EngineConfigOptions.audio_path` 传入真实音频文件
 
 ### 3. 运行测试
 
@@ -82,7 +87,7 @@ int main() {
 }
 ```
 
-### 使用 `source.type=stream` 外部推帧
+### 使用 `StreamSource` 外部推帧
 
 适合 SDK 集成、实时采集接入或自定义上游音频编排：
 
@@ -111,7 +116,7 @@ int main() {
 
 说明：
 
-- `source.type=stream` 会使用独立的 `StreamSource`
+- 显式 `source_stage.ops[0].name = "StreamSource"` 时，运行时会使用独立的 `StreamSource`
 - 这种模式更适合作为程序集成入口
 - `streaming_demo` 主要演示内置 `file/microphone` source，不是 `push_frame(...)` 的最佳入口
 
@@ -124,6 +129,7 @@ int main() {
 - 新运行时已支持“配置驱动、启动期构图、运行期静态 DAG”的模式
 - 线性 stage 段由 `tf::Pipeline` 执行，`Branch/Join` 由 `RuntimeDagExecutor` 负责最小路由与汇聚语义
 - 当前已注册 core 名称只有 `SileroVad`、`KaldiFbank`、`AsrParaformer`、`AsrSenseVoice`、`AsrWhisper`
+- 示例配置里推荐显式声明 `source_stage`；顶层 `source` 仅保留旧配置兼容
 - 顶层 `output`、`pipeline.push_chunk_samples`、`ops[].parallel` 目前不应被理解为稳定自动行为
 
 ## 推荐 Taskflow 示例

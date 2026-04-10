@@ -35,6 +35,8 @@ target_sources(yspeech
     yspeech/runtime/segment_state.cppm
     yspeech/runtime/segment_registry.cppm
     yspeech/runtime/runtime_context.cppm
+    yspeech/runtime/stage_adapter.cppm
+    yspeech/runtime/stage_support.cppm
     yspeech/runtime/event_record.cppm
     yspeech/runtime/pipeline_recipe.cppm
     yspeech/runtime/runtime_dag.cppm

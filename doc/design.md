@@ -374,9 +374,9 @@ flowchart LR
 
 ### EngineRuntime
 
-- 解析 `mode`、`task`、`source`、`frame`、`stream`
+- 解析 `mode`、`task`、`frame`、`stream`，以及 `source_stage` 对应的 source 配置
 - 初始化默认 `MicSource("stream")`
-- `source.type=file` 时改用 `FileSource + AudioFramePipelineSource`
+- `source_stage.ops[0].name = FileSource` 时改用 `FileSource + AudioFramePipelineSource`
 - 维护 `input_eof`、`stream_drained`、RTF、首包时延、stop 开销等统计
 
 ### Runtime / Stage
@@ -466,9 +466,9 @@ flowchart LR
 | `mode` | `offline` 时文件输入会强制取消实时节流 |
 | `task` | 写入 `EngineEvent.task`，默认 `asr` |
 | `log_level` | 设置运行时日志级别 |
-| `source.type` | `file`、`microphone`、`stream` |
-| `source.path` | 文件输入路径 |
-| `source.playback_rate` | 文件播放倍率；`0.0` 表示不按实时节流 |
+| `source_stage.ops[0].name` | `FileSource`、`MicrophoneSource`、`StreamSource` |
+| `source_stage.ops[0].params.path` | 文件输入路径 |
+| `source_stage.ops[0].params.playback_rate` | 文件播放倍率；`0.0` 表示不按实时节流 |
 | `frame.sample_rate/channels/dur_ms` | `AudioFrame` 基本参数 |
 | `stream.ring_capacity_frames` | `audio_frames` ring 容量 |
 
@@ -521,11 +521,11 @@ flowchart LR
 
 ## Source 语义
 
-| `source.type` | 实际行为 |
+| `source_stage.ops[0].name` | 实际行为 |
 |------|------|
-| `file` | 使用 `FileSource`，再封装成 `AudioFramePipelineSource` |
-| `microphone` | 使用 `MicSource` |
-| `stream` | 使用独立的 `StreamSource`，适合外部手动推帧 |
+| `FileSource` | 使用 `FileSource`，再封装成 `AudioFramePipelineSource` |
+| `MicrophoneSource` | 使用 `MicSource` |
+| `StreamSource` | 使用独立的 `StreamSource`，适合外部手动推帧 |
 
 ## 推荐阅读顺序
 

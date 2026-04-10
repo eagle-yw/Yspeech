@@ -8,6 +8,7 @@ export module yspeech.domain.feature.kaldi_fbank;
 import std;
 import yspeech.domain.feature.base;
 import yspeech.log;
+import yspeech.types;
 
 namespace yspeech {
 
@@ -35,6 +36,7 @@ public:
     KaldiFbankCore() = default;
 
     void init(const nlohmann::json& config) override {
+        core_id_ = config.value("__core_id", core_id_);
         knf::FbankOptions opts;
         
         if (config.contains("num_bins")) {
@@ -111,17 +113,30 @@ public:
     }
 
     auto process_samples(std::span<const float> audio, bool eos = false) -> std::optional<KaldiFbankOutput> override {
+        using clock = std::chrono::steady_clock;
+        const auto begin = clock::now();
+
         if (!fbank_) {
             return std::nullopt;
         }
         if (!audio.empty()) {
+            const auto accept_begin = clock::now();
             fbank_->AcceptWaveform(opts_.frame_opts.samp_freq, audio.data(), static_cast<int32_t>(audio.size()));
+            record_phase_time("accept", accept_begin, clock::now());
         }
         if (eos) {
+            const auto finish_begin = clock::now();
             fbank_->InputFinished();
             eos_seen_ = true;
+            record_phase_time("finish_input", finish_begin, clock::now());
         }
-        return build_output();
+        auto output = build_output();
+        record_total_time(begin, clock::now());
+        return output;
+    }
+
+    void bind_stats(ProcessingStats* stats) override {
+        runtime_stats_ = stats;
     }
 
     void deinit() override {
@@ -144,6 +159,8 @@ public:
 
 private:
     auto build_output() -> std::optional<KaldiFbankOutput> {
+        using clock = std::chrono::steady_clock;
+        const auto extract_begin = clock::now();
         int32_t num_frames = fbank_->NumFramesReady();
         int32_t frames_to_read = num_frames - frames_read_;
 
@@ -161,10 +178,16 @@ private:
         }
 
         frames_read_ += frames_to_read;
+        record_phase_time("extract", extract_begin, clock::now());
+
+        const auto lfr_begin = clock::now();
         features = apply_lfr(features);
+        record_phase_time("lfr", lfr_begin, clock::now());
 
         if (!cmvn_means_.empty() || !cmvn_vars_.empty()) {
+            const auto cmvn_begin = clock::now();
             apply_cmvn(features);
+            record_phase_time("cmvn", cmvn_begin, clock::now());
         }
 
         if (features.empty()) {
@@ -175,8 +198,10 @@ private:
         const auto delta_frame_count = static_cast<int>(delta_features.size());
 
         if (enable_accumulation_) {
+            const auto accumulate_begin = clock::now();
             accumulated_features_.insert(accumulated_features_.end(), features.begin(), features.end());
             if (accumulated_features_.size() < static_cast<size_t>(min_accumulated_frames_)) {
+                record_phase_time("accumulate", accumulate_begin, clock::now());
                 return std::nullopt;
             }
             if (accumulated_features_.size() > static_cast<size_t>(max_accumulated_frames_)) {
@@ -185,6 +210,7 @@ private:
                     accumulated_features_.end() - max_accumulated_frames_);
             }
             features = accumulated_features_;
+            record_phase_time("accumulate", accumulate_begin, clock::now());
         }
 
         return KaldiFbankOutput{
@@ -219,6 +245,36 @@ private:
     std::size_t lfr_next_start_ = 0;
     std::uint64_t output_version_ = 0;
     bool eos_seen_ = false;
+    ProcessingStats* runtime_stats_ = nullptr;
+    std::string core_id_ = "fbank";
+
+    void record_total_time(
+        const std::chrono::steady_clock::time_point& begin,
+        const std::chrono::steady_clock::time_point& end
+    ) const {
+        if (runtime_stats_ == nullptr) {
+            return;
+        }
+        runtime_stats_->record_core_time(
+            core_id_,
+            std::chrono::duration<double, std::milli>(end - begin).count()
+        );
+    }
+
+    void record_phase_time(
+        const std::string& phase,
+        const std::chrono::steady_clock::time_point& begin,
+        const std::chrono::steady_clock::time_point& end
+    ) const {
+        if (runtime_stats_ == nullptr) {
+            return;
+        }
+        runtime_stats_->record_core_phase_time(
+            core_id_,
+            phase,
+            std::chrono::duration<double, std::milli>(end - begin).count()
+        );
+    }
 
     void load_cmvn_stats() {
         if (cmvn_file_.empty()) return;

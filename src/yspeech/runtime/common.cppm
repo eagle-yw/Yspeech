@@ -10,6 +10,70 @@ import yspeech.pipeline_config;
 
 namespace yspeech {
 
+namespace detail {
+
+inline auto is_placeholder_source_value(const nlohmann::json& value) -> bool {
+    return value.is_string() && value.get<std::string>().empty() == false &&
+           value.get<std::string>() == "__AUDIO_PATH__";
+}
+
+inline auto source_type_from_core_name(std::string_view core_name) -> std::optional<std::string> {
+    if (core_name == "FileSource") {
+        return "file";
+    }
+    if (core_name == "MicrophoneSource") {
+        return "microphone";
+    }
+    if (core_name == "StreamSource") {
+        return "stream";
+    }
+    return std::nullopt;
+}
+
+inline auto find_source_stage_op(nlohmann::json& config) -> nlohmann::json* {
+    if (!config.contains("pipelines") || !config["pipelines"].is_array()) {
+        return nullptr;
+    }
+
+    for (auto& stage : config["pipelines"]) {
+        if (!stage.is_object() || !stage.contains("ops") || !stage["ops"].is_array() || stage["ops"].empty()) {
+            continue;
+        }
+        auto& op = stage["ops"][0];
+        if (!op.is_object() || !op.contains("name") || !op["name"].is_string()) {
+            continue;
+        }
+        if (source_type_from_core_name(op["name"].get<std::string>()).has_value()) {
+            return &op;
+        }
+    }
+
+    return nullptr;
+}
+
+inline auto find_source_stage_op(const nlohmann::json& config) -> const nlohmann::json* {
+    if (!config.contains("pipelines") || !config["pipelines"].is_array()) {
+        return nullptr;
+    }
+
+    for (const auto& stage : config["pipelines"]) {
+        if (!stage.is_object() || !stage.contains("ops") || !stage["ops"].is_array() || stage["ops"].empty()) {
+            continue;
+        }
+        const auto& op = stage["ops"][0];
+        if (!op.is_object() || !op.contains("name") || !op["name"].is_string()) {
+            continue;
+        }
+        if (source_type_from_core_name(op["name"].get<std::string>()).has_value()) {
+            return &op;
+        }
+    }
+
+    return nullptr;
+}
+
+} // namespace detail
+
 export struct FrameConfig {
     int sample_rate = 16000;
     int channels = 1;
@@ -57,6 +121,19 @@ export inline void apply_file_source_override(
     const std::string& audio_path,
     std::optional<double> playback_rate = std::nullopt
 ) {
+    if (auto* op = detail::find_source_stage_op(config); op != nullptr) {
+        (*op)["name"] = "FileSource";
+        auto& params = (*op)["params"];
+        if (!params.is_object()) {
+            params = nlohmann::json::object();
+        }
+        params["path"] = audio_path;
+        if (playback_rate.has_value()) {
+            params["playback_rate"] = *playback_rate;
+        }
+        return;
+    }
+
     if (!config.contains("source") || !config["source"].is_object()) {
         config["source"] = nlohmann::json::object();
     }
@@ -76,6 +153,40 @@ export inline auto load_runtime_config_with_file_source(
     auto config = load_runtime_config(config_path);
     apply_file_source_override(config, audio_path, playback_rate);
     return config;
+}
+
+export inline auto read_source_config(const nlohmann::json& config) -> nlohmann::json {
+    nlohmann::json source = nlohmann::json::object();
+    if (config.contains("source") && config["source"].is_object()) {
+        source = config["source"];
+    }
+
+    if (const auto* op = detail::find_source_stage_op(config); op != nullptr) {
+        const auto core_name = (*op).value("name", std::string{});
+        if (auto source_type = detail::source_type_from_core_name(core_name); source_type.has_value()) {
+            source["type"] = *source_type;
+        }
+        if ((*op).contains("params") && (*op)["params"].is_object()) {
+            for (const auto& [key, value] : (*op)["params"].items()) {
+                if (key == "path" &&
+                    (value.is_string() && (value.get<std::string>().empty() || detail::is_placeholder_source_value(value))) &&
+                    source.contains(key) && source[key].is_string() && !source[key].get<std::string>().empty() &&
+                    !detail::is_placeholder_source_value(source[key])) {
+                    continue;
+                }
+                source[key] = value;
+            }
+        }
+        if (source.contains("type")) {
+            return source;
+        }
+    }
+
+    if (!source.empty()) {
+        return source;
+    }
+
+    return nlohmann::json::object();
 }
 
 export inline auto read_runtime_int_config(

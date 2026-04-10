@@ -24,11 +24,6 @@ public:
 
     void configure(PipelineBuilderConfig config, RuntimeContext& runtime, SegmentRegistry& registry);
     void set_stage_callback(PipelineStageRole role, StageCallback callback);
-    void set_source_stage(StageCallback callback);
-    void set_vad_stage(StageCallback callback);
-    void set_feature_stage(StageCallback callback);
-    void set_asr_stage(StageCallback callback);
-    void set_event_stage(StageCallback callback);
     void set_completion_callback(CompletionCallback callback);
 
     void start();
@@ -63,26 +58,6 @@ public:
     void set_stage_callback(PipelineStageRole role, PipelineExecutor::StageCallback callback) {
         std::scoped_lock lock(state_mutex);
         stage_callbacks[role] = std::move(callback);
-    }
-
-    void set_vad_stage(PipelineExecutor::StageCallback callback) {
-        set_stage_callback(PipelineStageRole::Vad, std::move(callback));
-    }
-
-    void set_source_stage(PipelineExecutor::StageCallback callback) {
-        set_stage_callback(PipelineStageRole::Source, std::move(callback));
-    }
-
-    void set_feature_stage(PipelineExecutor::StageCallback callback) {
-        set_stage_callback(PipelineStageRole::Feature, std::move(callback));
-    }
-
-    void set_asr_stage(PipelineExecutor::StageCallback callback) {
-        set_stage_callback(PipelineStageRole::Asr, std::move(callback));
-    }
-
-    void set_event_stage(PipelineExecutor::StageCallback callback) {
-        set_stage_callback(PipelineStageRole::Event, std::move(callback));
     }
 
     void set_completion_callback(PipelineExecutor::CompletionCallback callback) {
@@ -300,26 +275,6 @@ void PipelineExecutor::configure(PipelineBuilderConfig config, RuntimeContext& r
 
 void PipelineExecutor::set_stage_callback(PipelineStageRole role, StageCallback callback) {
     impl_->set_stage_callback(role, std::move(callback));
-}
-
-void PipelineExecutor::set_source_stage(StageCallback callback) {
-    impl_->set_source_stage(std::move(callback));
-}
-
-void PipelineExecutor::set_vad_stage(StageCallback callback) {
-    impl_->set_vad_stage(std::move(callback));
-}
-
-void PipelineExecutor::set_feature_stage(StageCallback callback) {
-    impl_->set_feature_stage(std::move(callback));
-}
-
-void PipelineExecutor::set_asr_stage(StageCallback callback) {
-    impl_->set_asr_stage(std::move(callback));
-}
-
-void PipelineExecutor::set_event_stage(StageCallback callback) {
-    impl_->set_event_stage(std::move(callback));
 }
 
 void PipelineExecutor::set_completion_callback(CompletionCallback callback) {

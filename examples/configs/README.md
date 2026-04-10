@@ -2,6 +2,7 @@
 
 这里放的是仓库里当前建议参考的配置文件，已经按“默认主线 / DAG 验证 / 其他流式变体 / 模板参考”整理过。
 根目录旧 `configs/` 已移除，示例配置统一以当前目录为准。
+其中 `FileSource` 示例里的 `path` 默认使用 `__AUDIO_PATH__` 占位，实际音频文件请在运行时通过命令行参数或 `EngineConfigOptions.audio_path` 传入。
 
 ## 默认主线
 
@@ -11,7 +12,7 @@
 |------|------|
 | `streaming_paraformer_asr.json` | 当前推荐的单线流式 ASR 主线 |
 | `streaming_paraformer_asr_incremental_decode.json` | 单线流式 ASR + 增量 decode 对照样例 |
-| `streaming_paraformer_asr_stream_source.json` | 单线流式 ASR + `source.type=stream` 外部推帧示例 |
+| `streaming_paraformer_asr_stream_source.json` | 单线流式 ASR + `StreamSource` 外部推帧示例 |
 | `streaming_paraformer_asr_capabilities.json` | 单线流式 ASR + capability 示例 |
 | `offline_paraformer_asr.json` | 离线 ParaFormer，中文识别 |
 | `offline_sensevoice_asr.json` | 离线 SenseVoice，多语言识别 |
@@ -42,21 +43,21 @@
 
 - `task = asr`
 - `mode = offline`
-- `source.type = file`
+- `source_stage.ops[0].name = FileSource`
 - 单路径静态 DAG：`FileSource -> (KaldiFbank -> AsrParaformer)`
 
 ### `offline_sensevoice_asr.json`
 
 - `task = asr`
 - `mode = offline`
-- `source.type = file`
+- `source_stage.ops[0].name = FileSource`
 - 单路径静态 DAG：`FileSource -> (KaldiFbank -> AsrSenseVoice)`
 
 ### `streaming_paraformer_asr.json`
 
 - `task = asr`
 - `mode = streaming`
-- `source.type = file`
+- `source_stage.ops[0].name = FileSource`
 - 单路径静态 DAG：`FileSource -> SileroVad -> KaldiFbank -> AsrParaformer`
 - 当前推荐的单线流式 ASR 开发和回归基线
 - `asr_stage` 默认使用更保守的门控：
@@ -80,7 +81,7 @@
 ### `streaming_paraformer_asr_stream_source.json`
 
 - 基于单线流式 ASR 主线
-- `source.type = stream`
+- `source_stage.ops[0].name = StreamSource`
 - 显式 `source_stage` 使用 `StreamSource`
 - 适合 `Engine::push_frame(...)` 外部推帧场景
 - 运行时会创建独立的 `StreamSource`
@@ -96,8 +97,7 @@
 
 - `task = asr`
 - `mode = streaming`
-- `source.type = file`
-- 默认已补齐 `source.path`
+- `source_stage.ops[0].name = FileSource`
 - 单路径静态 DAG：`FileSource -> SileroVad -> KaldiFbank -> AsrSenseVoice`
 - 对应 SenseVoice 线性流式入口
 
@@ -137,7 +137,7 @@
 
 - `task = vad`
 - `mode = streaming`
-- `source.type = microphone`
+- `source_stage.ops[0].name = MicrophoneSource`
 - 单路径静态 DAG：`MicrophoneSource -> SileroVad`
 
 ## 使用方式
@@ -145,13 +145,13 @@
 ```bash
 ./build/examples/simple_transcribe \
   examples/configs/offline_paraformer_asr.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+  <音频文件>
 ```
 
 ```bash
 ./build/examples/streaming_demo \
   examples/configs/streaming_paraformer_asr.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  <音频文件> \
   0.0
 ```
 
@@ -166,7 +166,7 @@ engine.stop();
 ```bash
 ./build/examples/transcribe_tool \
   examples/configs/two_level_asr.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  <音频文件> \
   --verbose
 ```
 
@@ -174,11 +174,12 @@ engine.stop();
 
 | 字段 | 说明 |
 |------|------|
-| `source.path` | 文件输入路径 |
-| `source.playback_rate` | 文件播放倍率 |
+| `source_stage.ops[0].params.path` | 文件输入路径，占位值建议在运行时覆盖 |
+| `source_stage.ops[0].params.playback_rate` | 文件播放倍率 |
 | `frame.sample_rate` | 采样率 |
 | `frame.dur_ms` | 单帧时长 |
 | `stream.ring_capacity_frames` | ring 容量 |
+| `runtime.asr_core_pool_size` | ASR core 池大小，建议和流式 ASR 的并发目标保持一致 |
 | `pipelines[].max_concurrency` | stage 并发度 |
 | `pipelines[].depends_on` | stage 级依赖关系 |
 | `pipelines[].join_policy` | join 节点汇聚策略，当前支持 `all_of` / `any_of` |

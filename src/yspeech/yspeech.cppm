@@ -16,6 +16,8 @@ export import yspeech.runtime.token;
 export import yspeech.runtime.segment_state;
 export import yspeech.runtime.segment_registry;
 export import yspeech.runtime.runtime_context;
+export import yspeech.runtime.stage_adapter;
+export import yspeech.runtime.stage_support;
 export import yspeech.runtime.event_record;
 export import yspeech.runtime.pipeline_recipe;
 export import yspeech.runtime.runtime_dag;

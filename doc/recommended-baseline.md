@@ -80,7 +80,7 @@ flowchart LR
 ```bash
 ./build/examples/streaming_demo \
   examples/configs/streaming_paraformer_asr.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  <音频文件> \
   0.0
 ```
 

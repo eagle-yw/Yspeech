@@ -5,16 +5,14 @@ module;
 export module yspeech.domain.feature.stage;
 
 import std;
-import yspeech.aspect;
-import yspeech.aspect.logger;
-import yspeech.aspect.timer;
-import yspeech.capability;
 import yspeech.log;
 import yspeech.domain.feature.base;
 import yspeech.domain.feature.kaldi_fbank;
 import yspeech.runtime.runtime_context;
 import yspeech.runtime.segment_state;
 import yspeech.runtime.segment_registry;
+import yspeech.runtime.stage_adapter;
+import yspeech.runtime.stage_support;
 import yspeech.runtime.token;
 import yspeech.types;
 
@@ -23,11 +21,8 @@ namespace yspeech {
 export class FeatureStage {
 public:
     void init(const nlohmann::json& config) {
-        config_ = config;
         core_name_ = config.value("core_name", std::string("KaldiFbank"));
-        core_id_ = config.value("__core_id", core_id_);
-        configure_aspects(config);
-        configure_capabilities(config);
+        adapter_.init(config, config.value("__core_id", core_id_));
     }
 
     void process(PipelineToken& token, RuntimeContext& runtime, SegmentRegistry& registry) {
@@ -46,19 +41,21 @@ public:
         {
             std::scoped_lock lock(core_mutex_);
             auto& state = stream_states_[token.stream_id];
-            if (!state.initialized) {
-                state.core = FeatureCoreFactory::get_instance().create_core(core_name_);
-                state.core->init(config_);
-                state.initialized = true;
-            }
-            if (!state.core) {
+            auto* core = state.ensure(
+                [&]() {
+                    return FeatureCoreFactory::get_instance().create_core(core_name_);
+                },
+                [&](FeatureCoreIface& created_core) {
+                    created_core.init(adapter_.config());
+                    stats_binding_.bind_core(created_core);
+                }
+            );
+            if (!core) {
                 return;
             }
-            apply_capabilities(pre_capabilities_, runtime);
-            auto aspect_payloads = before_aspects(runtime);
-            output = state.core->process_samples(std::span<const float>(token.audio), token.eos);
-            after_aspects(runtime, std::move(aspect_payloads));
-            apply_capabilities(post_capabilities_, runtime);
+            output = adapter_.run(runtime, [&]() {
+                return core->process_samples(std::span<const float>(token.audio), token.eos);
+            });
             if (output.has_value() && !output->delta_features.empty()) {
                 produced_chunk = std::make_shared<const std::vector<std::vector<float>>>(
                     std::move(output->delta_features)
@@ -133,15 +130,19 @@ public:
     void deinit() {
         for (auto& [stream_id, state] : stream_states_) {
             (void)stream_id;
-            if (state.core) {
-                state.core->deinit();
-            }
+            deinit_core(state.core);
+            state.reset();
         }
         stream_states_.clear();
+        adapter_.reset();
     }
 
     void bind_stats(ProcessingStats* stats) {
-        config_runtime_stats_ = stats;
+        stats_binding_.bind(stats);
+        for (auto& [stream_id, state] : stream_states_) {
+            (void)stream_id;
+            stats_binding_.bind_core_ptr(state.core);
+        }
     }
 
 private:
@@ -149,85 +150,18 @@ private:
     using LocalFeatureChunkList = std::vector<LocalFeatureChunk>;
     using LocalFeatureChunkListPtr = std::shared_ptr<LocalFeatureChunkList>;
 
-    struct StreamFeatureState {
-        std::unique_ptr<FeatureCoreIface> core;
-        bool initialized = false;
+    struct StreamFeatureState : LazyCoreHolder<FeatureCoreIface> {
         LocalFeatureChunkListPtr feature_chunks = std::make_shared<LocalFeatureChunkList>();
         int feature_count = 0;
         std::uint64_t feature_version = 0;
     };
 
-    nlohmann::json config_;
     std::string core_name_ = "KaldiFbank";
     std::unordered_map<std::string, StreamFeatureState> stream_states_;
-    std::vector<AspectIface> aspects_;
-    std::vector<CapabilityIface> pre_capabilities_;
-    std::vector<CapabilityIface> post_capabilities_;
-    ProcessingStats* config_runtime_stats_ = nullptr;
+    StageStatsBinding stats_binding_;
     std::string core_id_ = "fbank";
     std::mutex core_mutex_;
-
-    void configure_aspects(const nlohmann::json& config) {
-        aspects_.clear();
-        aspects_.emplace_back(TimerAspect{});
-        if (config.contains("aspects") && config["aspects"].is_array()) {
-            for (const auto& entry : config["aspects"]) {
-                if (!entry.is_string()) {
-                    continue;
-                }
-                if (entry.get<std::string>() == "LoggerAspect") {
-                    aspects_.emplace_back(LoggerAspect{});
-                }
-            }
-        }
-    }
-
-    void configure_capabilities(const nlohmann::json& config) {
-        pre_capabilities_.clear();
-        post_capabilities_.clear();
-        if (!config.contains("capabilities") || !config["capabilities"].is_array()) {
-            return;
-        }
-        for (const auto& entry : config["capabilities"]) {
-            if (!entry.is_object() || !entry.contains("name") || !entry["name"].is_string()) {
-                continue;
-            }
-            auto params = entry.contains("params") && entry["params"].is_object()
-                ? entry["params"]
-                : nlohmann::json::object();
-            params["__component_name"] = core_id_;
-            auto capability = CapabilityFactory::get_instance().create_capability(
-                entry["name"].get<std::string>(),
-                params
-            );
-            if (capability.phase() == CapabilityPhase::Post) {
-                post_capabilities_.push_back(std::move(capability));
-            } else {
-                pre_capabilities_.push_back(std::move(capability));
-            }
-        }
-    }
-
-    auto before_aspects(RuntimeContext& runtime) -> std::vector<std::any> {
-        std::vector<std::any> payloads;
-        payloads.reserve(aspects_.size());
-        for (auto& aspect : aspects_) {
-            payloads.push_back(aspect.before(runtime, core_id_));
-        }
-        return payloads;
-    }
-
-    void after_aspects(RuntimeContext& runtime, std::vector<std::any> payloads) {
-        for (std::size_t i = aspects_.size(); i > 0; --i) {
-            aspects_[i - 1].after(runtime, core_id_, std::move(payloads[i - 1]));
-        }
-    }
-
-    void apply_capabilities(std::vector<CapabilityIface>& capabilities, RuntimeContext& runtime) {
-        for (auto& capability : capabilities) {
-            capability.apply(runtime);
-        }
-    }
+    StageAdapter adapter_;
 };
 
 }

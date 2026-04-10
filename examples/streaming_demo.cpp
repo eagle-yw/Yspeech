@@ -3,6 +3,7 @@
 import std;
 import yspeech.engine;
 import yspeech.log;
+import yspeech.runtime.common;
 import yspeech.types;
 
 namespace {
@@ -149,9 +150,8 @@ auto inspect_demo_config(const std::string& config_path) -> DemoConfigProfile {
     profile.name = config.value("name", profile.name);
     profile.task = config.value("task", profile.task);
     profile.mode = config.value("mode", profile.mode);
-    if (config.contains("source") && config["source"].is_object()) {
-        profile.source_type = config["source"].value("type", profile.source_type);
-    }
+    auto source_config = yspeech::read_source_config(config);
+    profile.source_type = source_config.value("type", profile.source_type);
 
     if (config.contains("pipelines") && config["pipelines"].is_array()) {
         for (const auto& stage : config["pipelines"]) {

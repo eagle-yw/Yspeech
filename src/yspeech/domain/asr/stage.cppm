@@ -5,10 +5,6 @@ module;
 export module yspeech.domain.asr.stage;
 
 import std;
-import yspeech.aspect;
-import yspeech.aspect.logger;
-import yspeech.aspect.timer;
-import yspeech.capability;
 import yspeech.log;
 import yspeech.domain.asr.base;
 import yspeech.domain.asr.paraformer;
@@ -16,6 +12,8 @@ import yspeech.domain.asr.sensevoice;
 import yspeech.runtime.runtime_context;
 import yspeech.runtime.segment_state;
 import yspeech.runtime.segment_registry;
+import yspeech.runtime.stage_adapter;
+import yspeech.runtime.stage_support;
 import yspeech.runtime.token;
 import yspeech.types;
 
@@ -24,7 +22,7 @@ namespace yspeech {
 export class AsrStage {
 public:
     void init(const nlohmann::json& config) {
-        config_ = config;
+        adapter_.init(config, config.value("__core_id", core_id_));
         core_name_ = config.value("model_name", std::string("AsrParaformer"));
         core_pool_size_ = std::max<std::size_t>(
             1,
@@ -37,17 +35,15 @@ public:
         );
         max_decode_feature_frames_ = config.value("max_decode_feature_frames", 0);
         enable_incremental_decode_ = config.value("enable_incremental_decode", true);
-        core_id_ = config.value("__core_id", core_id_);
         core_pool_.clear();
         core_pool_.reserve(core_pool_size_);
         for (std::size_t i = 0; i < core_pool_size_; ++i) {
             auto holder = std::make_unique<LineCoreHolder>();
             holder->core = AsrCoreFactory::get_instance().create_core(core_name_);
-            holder->core->init(config_);
+            holder->core->init(adapter_.config());
+            stats_binding_.bind_core_ptr(holder->core);
             core_pool_.push_back(std::move(holder));
         }
-        configure_aspects(config);
-        configure_capabilities(config);
     }
 
     void process(PipelineToken& token, RuntimeContext& runtime, SegmentRegistry& registry) {
@@ -145,17 +141,17 @@ public:
             if (!holder.core) {
                 return;
             }
-            apply_capabilities(pre_capabilities_, runtime);
-            auto aspect_payloads = before_aspects(runtime);
             if (enable_incremental_decode_ && holder.core->supports_incremental()) {
-                result = should_emit_segment_final
+                result = adapter_.run(runtime, [&]() {
+                    return should_emit_segment_final
                     ? holder.core->decode_final(token.stream_id, snapshot.features)
                     : holder.core->decode_partial(token.stream_id, snapshot.features);
+                });
             } else {
-                result = holder.core->infer(snapshot.features);
+                result = adapter_.run(runtime, [&]() {
+                    return holder.core->infer(snapshot.features);
+                });
             }
-            after_aspects(runtime, std::move(aspect_payloads));
-            apply_capabilities(post_capabilities_, runtime);
         }
 
         if (result.text.empty()) {
@@ -205,33 +201,26 @@ public:
     }
 
     void deinit() {
-        for (auto& holder : core_pool_) {
-            if (!holder || !holder->core) {
-                continue;
-            }
-            holder->core->deinit();
-        }
+        deinit_holder_cores(core_pool_);
         core_pool_.clear();
         {
             std::scoped_lock lock(stream_state_mutex_);
             stream_states_.clear();
         }
+        adapter_.reset();
     }
 
     void bind_stats(ProcessingStats* stats) {
-        runtime_stats_ = stats;
+        stats_binding_.bind(stats);
         for (auto& holder : core_pool_) {
-            if (holder && holder->core) {
-                holder->core->bind_stats(stats);
+            if (holder) {
+                stats_binding_.bind_core_ptr(holder->core);
             }
         }
     }
 
 private:
-    struct LineCoreHolder {
-        std::mutex mutex;
-        std::unique_ptr<AsrCoreIface> core;
-    };
+    using LineCoreHolder = MutexCoreHolder<AsrCoreIface>;
 
     struct StreamAsrState {
         std::uint64_t accepted_feature_version = 0;
@@ -338,13 +327,11 @@ private:
             if (!holder.core) {
                 return;
             }
-            apply_capabilities(pre_capabilities_, runtime);
-            auto aspect_payloads = before_aspects(runtime);
-            result = enable_incremental_decode_ && holder.core->supports_incremental()
+            result = adapter_.run(runtime, [&]() {
+                return enable_incremental_decode_ && holder.core->supports_incremental()
                 ? holder.core->decode_final(token.stream_id, snapshot.features)
                 : holder.core->infer(snapshot.features);
-            after_aspects(runtime, std::move(aspect_payloads));
-            apply_capabilities(post_capabilities_, runtime);
+            });
         }
 
         if (result.text.empty()) {
@@ -402,7 +389,6 @@ private:
         registry.erase_closed();
     }
 
-    nlohmann::json config_;
     std::string core_name_ = "AsrParaformer";
     std::size_t core_pool_size_ = 1;
     int min_feature_frames_ = 8;
@@ -410,75 +396,11 @@ private:
     int max_decode_feature_frames_ = 0;
     bool enable_incremental_decode_ = true;
     std::vector<std::unique_ptr<LineCoreHolder>> core_pool_;
-    std::vector<AspectIface> aspects_;
-    std::vector<CapabilityIface> pre_capabilities_;
-    std::vector<CapabilityIface> post_capabilities_;
     std::unordered_map<std::string, StreamAsrState> stream_states_;
     std::mutex stream_state_mutex_;
-    ProcessingStats* runtime_stats_ = nullptr;
+    StageStatsBinding stats_binding_;
     std::string core_id_ = "asr";
-
-    void configure_aspects(const nlohmann::json& config) {
-        aspects_.clear();
-        aspects_.emplace_back(TimerAspect{});
-        if (config.contains("aspects") && config["aspects"].is_array()) {
-            for (const auto& entry : config["aspects"]) {
-                if (!entry.is_string()) {
-                    continue;
-                }
-                if (entry.get<std::string>() == "LoggerAspect") {
-                    aspects_.emplace_back(LoggerAspect{});
-                }
-            }
-        }
-    }
-
-    void configure_capabilities(const nlohmann::json& config) {
-        pre_capabilities_.clear();
-        post_capabilities_.clear();
-        if (!config.contains("capabilities") || !config["capabilities"].is_array()) {
-            return;
-        }
-        for (const auto& entry : config["capabilities"]) {
-            if (!entry.is_object() || !entry.contains("name") || !entry["name"].is_string()) {
-                continue;
-            }
-            auto params = entry.contains("params") && entry["params"].is_object()
-                ? entry["params"]
-                : nlohmann::json::object();
-            params["__component_name"] = core_id_;
-            auto capability = CapabilityFactory::get_instance().create_capability(
-                entry["name"].get<std::string>(),
-                params
-            );
-            if (capability.phase() == CapabilityPhase::Post) {
-                post_capabilities_.push_back(std::move(capability));
-            } else {
-                pre_capabilities_.push_back(std::move(capability));
-            }
-        }
-    }
-
-    auto before_aspects(RuntimeContext& runtime) -> std::vector<std::any> {
-        std::vector<std::any> payloads;
-        payloads.reserve(aspects_.size());
-        for (auto& aspect : aspects_) {
-            payloads.push_back(aspect.before(runtime, core_id_));
-        }
-        return payloads;
-    }
-
-    void after_aspects(RuntimeContext& runtime, std::vector<std::any> payloads) {
-        for (std::size_t i = aspects_.size(); i > 0; --i) {
-            aspects_[i - 1].after(runtime, core_id_, std::move(payloads[i - 1]));
-        }
-    }
-
-    void apply_capabilities(std::vector<CapabilityIface>& capabilities, RuntimeContext& runtime) {
-        for (auto& capability : capabilities) {
-            capability.apply(runtime);
-        }
-    }
+    StageAdapter adapter_;
 };
 
 }

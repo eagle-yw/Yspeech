@@ -59,12 +59,12 @@ This document tracks the runtime refactor that unified streaming execution on th
 ## Validation Snapshot
 
 ### Short Audio Benchmark
-- Audio: `model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav`
+- Audio: `<短音频样本>`
 - Runs: `5`
 - This sample remains part of the verification set for the current Taskflow streaming baseline.
 
 ### Longer Audio Benchmark
-- Audio: `model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/6-zh-en.wav`
+- Audio: `<长音频样本>`
 - Runs: `3`
 - The longer mixed-language sample remains part of the smoke/benchmark set used to verify the current Taskflow runtime.
 

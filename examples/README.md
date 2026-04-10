@@ -23,13 +23,13 @@ cmake --build build
 ```bash
 ./build/examples/simple_transcribe \
   examples/configs/offline_paraformer_asr.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+  <音频文件>
 ```
 
 ```bash
 ./build/examples/simple_transcribe \
   examples/configs/offline_sensevoice_asr.json \
-  model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/test_wavs/zh.wav
+  <音频文件>
 ```
 
 ### 2. 流式 ASR 识别
@@ -37,28 +37,28 @@ cmake --build build
 ```bash
 ./build/examples/streaming_demo \
   examples/configs/streaming_paraformer_asr.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  <音频文件> \
   0.0
 ```
 
 ```bash
 ./build/examples/streaming_demo \
   examples/configs/streaming_sensevoice_asr.json \
-  model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/test_wavs/zh.wav \
+  <音频文件> \
   1.0
 ```
 
 ```bash
 ./build/examples/streaming_demo \
   examples/configs/streaming_paraformer_asr_dag.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  <音频文件> \
   0.0
 ```
 
 ```bash
 ./build/examples/streaming_demo \
   examples/configs/streaming_paraformer_asr_dag_timeout.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  <音频文件> \
   0.0
 ```
 
@@ -67,7 +67,7 @@ benchmark：
 ```bash
 ./build/examples/streaming_demo \
   examples/configs/streaming_paraformer_asr.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  <音频文件> \
   20 \
   --queue 0 \
   --benchmark 10
@@ -78,15 +78,20 @@ benchmark：
 ```bash
 ./build/examples/transcribe_tool \
   examples/configs/offline_paraformer_asr.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+  <音频文件>
 ```
 
 ```bash
 ./build/examples/transcribe_tool \
   examples/configs/offline_sensevoice_asr.json \
-  model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/test_wavs/zh.wav \
+  <音频文件> \
   --verbose
 ```
+
+说明：
+
+- 示例 JSON 里的 `FileSource` 路径默认是 `__AUDIO_PATH__`
+- 实际音频文件请在命令行第二个参数传入，或在代码里通过 `EngineConfigOptions.audio_path` 覆盖
 
 ## 示例程序列表
 

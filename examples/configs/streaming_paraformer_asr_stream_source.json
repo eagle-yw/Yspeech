@@ -6,10 +6,8 @@
   "mode": "streaming",
   "runtime": {
     "pipeline_lines": 2,
-    "pipeline_name": "yspeech.taskflow.streaming"
-  },
-  "source": {
-    "type": "stream"
+    "pipeline_name": "yspeech.taskflow.streaming",
+    "asr_core_pool_size": 2
   },
   "frame": {
     "sample_rate": 16000,
@@ -26,7 +24,8 @@
       "ops": [
         {
           "id": "source",
-          "name": "StreamSource"
+          "name": "StreamSource",
+          "params": {}
         }
       ]
     },

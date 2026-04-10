@@ -40,7 +40,7 @@ engine.stop();
 
 - 加载配置并应用日志级别
 - 创建 source、runtime 执行器与事件线程
-- 决定 `source.type` 对应的输入源实现
+- 决定 `source_stage.ops[0].name` 对应的输入源实现
 - 在线性配置下驱动 `PipelineExecutor`
 - 在声明了 stage 依赖的配置下驱动 `RuntimeDagExecutor`
 - 汇总性能统计并发出 `input_eof` / `stream_drained`

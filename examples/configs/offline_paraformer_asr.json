@@ -3,10 +3,6 @@
   "version": "1.0",
   "task": "asr",
   "mode": "offline",
-  "source": {
-    "type": "file",
-    "path": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav"
-  },
   "frame": {
     "sample_rate": 16000,
     "channels": 1,
@@ -19,7 +15,10 @@
       "ops": [
         {
           "id": "source",
-          "name": "FileSource"
+          "name": "FileSource",
+          "params": {
+            "path": "__AUDIO_PATH__"
+          }
         }
       ]
     },

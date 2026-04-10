@@ -22,6 +22,9 @@ public:
     virtual ~VadCoreIface() = default;
     virtual void init(const nlohmann::json& config) = 0;
     virtual auto process_samples(std::span<const float> samples, bool eos = false) -> SileroVadChunkResult = 0;
+    virtual void bind_stats(ProcessingStats* stats) {
+        (void)stats;
+    }
     virtual void deinit() = 0;
     virtual auto current_probability() const -> float = 0;
 };

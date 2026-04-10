@@ -83,7 +83,7 @@ Failed to create ASR core: unknown core name: Xxx
 排查：
 
 - `mode=offline` 时，文件输入会强制按 `playback_rate=0.0` 处理
-- 只有 `mode=streaming` 下，`source.playback_rate` 才会体现节流效果
+- 只有 `mode=streaming` 下，`source_stage.ops[0].params.playback_rate` 才会体现节流效果
 
 ## 日志级别
 

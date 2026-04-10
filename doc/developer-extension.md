@@ -57,8 +57,8 @@ src/yspeech/domain/speaker/
 
 像当前的 `SourceStage` 也是这个思路：
 
-- 底层 `FileSource / MicSource / StreamSource` 负责真实输入
-- `SourceStage` 负责把入口 source 纳入显式 stage DAG
+- 底层 `FileSource / MicrophoneSource / StreamSource` 负责真实输入
+- `SourceStage` 负责把入口 source 纳入显式 stage DAG，并统一承接 `source_stage.ops[0]` 的配置
 
 `Stage` 不应该承担：
 

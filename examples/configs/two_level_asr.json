@@ -4,16 +4,16 @@
   "task": "asr",
   "mode": "streaming",
   "log_level": "info",
+  "runtime": {
+    "pipeline_lines": 4,
+    "pipeline_name": "yspeech.streaming.two_level",
+    "asr_core_pool_size": 4
+  },
   "global": {
     "properties": {
       "model_root": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14",
       "vad_model": "model/vad/silero_vad.onnx"
     }
-  },
-  "source": {
-    "type": "file",
-    "path": "${model_root}/test_wavs/0.wav",
-    "playback_rate": 20.0
   },
   "frame": {
     "sample_rate": 16000,
@@ -30,7 +30,11 @@
       "ops": [
         {
           "id": "source",
-          "name": "FileSource"
+          "name": "FileSource",
+          "params": {
+            "path": "__AUDIO_PATH__",
+            "playback_rate": 20.0
+          }
         }
       ]
     },

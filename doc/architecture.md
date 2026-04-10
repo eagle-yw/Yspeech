@@ -77,8 +77,8 @@ sequenceDiagram
 ## 模式语义
 
 - `mode=offline` 会把文件 source 的实际 `playback_rate` 强制改成 `0.0`
-- `source.type=file` 使用 `FileSource + AudioFramePipelineSource`
-- `source.type=microphone` 使用 `MicSource`
-- `source.type=stream` 使用独立的 `StreamSource`
+- `source_stage.ops[0].name = FileSource` 使用 `FileSource + AudioFramePipelineSource`
+- `source_stage.ops[0].name = MicrophoneSource` 使用 `MicSource`
+- `source_stage.ops[0].name = StreamSource` 使用独立的 `StreamSource`
 
 详细设计说明见 [design.md](/Users/eagle/workspace/Playground/Yspeech/doc/design.md)。

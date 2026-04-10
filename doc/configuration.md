@@ -4,7 +4,7 @@
 
 Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字段”两层理解：
 
-- 运行时层：`mode`、`task`、`log_level`、`source`、`frame`、`stream`
+- 运行时层：`mode`、`task`、`log_level`、`frame`、`stream`、`runtime`
 - 管道层：`global`、`pipelines`
 
 `EngineRuntime` 会先处理运行时字段，再通过 `PipelineConfig` 把 `pipelines` 构成执行图。
@@ -17,11 +17,6 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
   "version": "1.0",
   "mode": "streaming",
   "log_level": "info",
-  "source": {
-    "type": "file",
-    "path": "audio.wav",
-    "playback_rate": 20.0
-  },
   "frame": {
     "sample_rate": 16000,
     "channels": 1,
@@ -41,7 +36,11 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
       "ops": [
         {
           "id": "source",
-          "name": "FileSource"
+          "name": "FileSource",
+          "params": {
+            "path": "__AUDIO_PATH__",
+            "playback_rate": 20.0
+          }
         }
       ]
     },
@@ -73,30 +72,30 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
 | `mode` | string | 否 | `offline` 或 `streaming` |
 | `task` | string | 否 | 写入 `EngineEvent.task`，默认 `asr` |
 | `log_level` | string | 否 | `debug/info/warn/error/none` |
-| `source` | object | 否 | 输入来源配置 |
 | `frame` | object | 否 | `AudioFrame` 相关参数 |
 | `stream` | object | 否 | 流式 ring 配置 |
+| `runtime` | object | 否 | 运行图并发和执行参数 |
 | `global` | object | 否 | 变量替换和全局 capability |
 | `pipelines` | array | 否 | 新版多 stage 配置 |
 
 `pipelines` 是必需字段。
 
-## source
+## source_stage
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `type` | string | `file`、`microphone` 或 `stream` |
-| `path` | string | 文件路径，`type=file` 时必填 |
-| `playback_rate` | number | 文件播放倍率，`1.0` 为实时，`0.0` 关闭节流；`mode=offline` 时会被当作 `0.0` |
+| `name` | string | `FileSource`、`MicrophoneSource` 或 `StreamSource` |
+| `params.path` | string | 文件路径，`name=FileSource` 时使用；示例配置通常写成 `__AUDIO_PATH__` 占位 |
+| `params.playback_rate` | number | 文件播放倍率，`1.0` 为实时，`0.0` 关闭节流；`mode=offline` 时会被当作 `0.0` |
 | `device` | string | 当前实现保留字段 |
 
 说明：
 
-- `type=file` 会创建 `FileSource`
-- `type=microphone` 会使用默认 `MicSource`
-- `type=stream` 会使用独立的 `StreamSource`
-- 顶层 `source` 在运行时会被编译成内部的 `SourceStage`
-- `EngineConfigOptions.audio_path` 会覆盖 `source.path`
+- `source_stage.ops[0].name = FileSource` 会创建 `FileSource`
+- `source_stage.ops[0].name = MicrophoneSource` 会使用默认 `MicSource`
+- `source_stage.ops[0].name = StreamSource` 会使用独立的 `StreamSource`
+- `EngineConfigOptions.audio_path` 会覆盖 `source_stage.ops[0].params.path`
+- 顶层 `source` 只保留兼容旧配置的 fallback，不再是推荐写法
 
 ## frame
 
@@ -168,7 +167,8 @@ Yspeech 的配置建议分成“真实运行时字段”和“pipeline 构图字
 - `input`/`output` 字段当前会被解析保存
 - 但主执行链路没有基于这些字段建立完整 stage 间数据路由
 - 它们更适合当作配置语义说明，而不是当前稳定功能承诺
-- 如果没有显式声明 `source_stage`，运行时会根据顶层 `source` 自动注入一个内部 `SourceStage`
+- 推荐显式声明 `source_stage`
+- 如果没有显式声明 `source_stage`，运行时仍会根据旧顶层 `source` 兼容性地注入内部 `SourceStage`
 - `depends_on` 会在启动期编译成静态 DAG，运行期结构不再变化
 - 线性子路径由 `tf::Pipeline` 执行，`Branch/Join` 由 `RuntimeDagExecutor` 处理
 

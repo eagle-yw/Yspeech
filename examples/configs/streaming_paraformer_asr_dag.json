@@ -6,12 +6,8 @@
   "mode": "streaming",
   "runtime": {
     "pipeline_lines": 2,
-    "pipeline_name": "yspeech.streaming.dag"
-  },
-  "source": {
-    "type": "file",
-    "path": "model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav",
-    "playback_rate": 0.0
+    "pipeline_name": "yspeech.streaming.dag",
+    "asr_core_pool_size": 2
   },
   "frame": {
     "sample_rate": 16000,
@@ -28,7 +24,11 @@
       "ops": [
         {
           "id": "source",
-          "name": "FileSource"
+          "name": "FileSource",
+          "params": {
+            "path": "__AUDIO_PATH__",
+            "playback_rate": 0.0
+          }
         }
       ]
     },

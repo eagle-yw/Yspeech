@@ -24,7 +24,7 @@ cmake --build build
 ```bash
 ./build/examples/simple_transcribe \
   examples/configs/offline_paraformer_asr.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav
+  <音频文件>
 ```
 
 ### 流式识别
@@ -32,7 +32,7 @@ cmake --build build
 ```bash
 ./build/examples/streaming_demo \
   examples/configs/streaming_paraformer_asr.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  <音频文件> \
   0.0
 ```
 
@@ -41,13 +41,13 @@ cmake --build build
 ```bash
 ./build/examples/streaming_demo \
   examples/configs/streaming_paraformer_asr_capabilities.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  <音频文件> \
   0.0
 ```
 
 ### 外部推帧流式识别
 
-`source.type=stream` 适合由应用自己推送 `AudioFrame`，不依赖内置文件或麦克风 source。
+显式 `source_stage.ops[0].name = "StreamSource"` 适合由应用自己推送 `AudioFrame`，不依赖内置文件或麦克风 source。
 
 推荐配置：
 
@@ -69,14 +69,14 @@ engine.stop();
 
 - 这种模式下运行时会创建独立的 `StreamSource`
 - 更适合作为 SDK 集成入口
-- `streaming_demo` 默认使用内置 source 编排，不是演示 `source.type=stream` 的最佳入口
+- `streaming_demo` 默认使用内置 source 编排，不是演示 `StreamSource` 外部推帧的最佳入口
 
 ### Taskflow 静态 DAG 示例
 
 ```bash
 ./build/examples/streaming_demo \
   examples/configs/streaming_paraformer_asr_dag.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  <音频文件> \
   0.0
 ```
 
@@ -85,7 +85,7 @@ engine.stop();
 ```bash
 ./build/examples/streaming_demo \
   examples/configs/streaming_paraformer_asr_dag_timeout.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  <音频文件> \
   0.0
 ```
 
@@ -94,9 +94,14 @@ engine.stop();
 ```bash
 ./build/examples/transcribe_tool \
   examples/configs/offline_sensevoice_asr.json \
-  model/asr/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/test_wavs/zh.wav \
+  <音频文件> \
   --verbose
 ```
+
+说明：
+
+- 示例 JSON 里的 `source_stage.ops[0].params.path` 默认是 `__AUDIO_PATH__`
+- 实际音频文件请在命令行第二个参数传入，或通过 `EngineConfigOptions.audio_path` 覆盖
 
 ## Engine 生命周期
 
@@ -193,8 +198,8 @@ int main() {
 
 | 字段 | 作用 |
 |------|------|
-| `audio_path` | 覆盖配置中的 `source.path`，并强制切成 `file` source |
-| `playback_rate` | 覆盖 `source.playback_rate` |
+| `audio_path` | 覆盖配置中的 `source_stage.ops[0].params.path`，并强制切成 `FileSource` |
+| `playback_rate` | 覆盖 `source_stage.ops[0].params.playback_rate` |
 | `log_level` | 覆盖顶层 `log_level` |
 | `enable_event_queue` | 控制是否把事件同时写入 internal queue |
 

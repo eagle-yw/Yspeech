@@ -23,7 +23,7 @@
 ```bash
 ./build/examples/streaming_demo \
   examples/configs/streaming_paraformer_asr.json \
-  model/asr/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav \
+  <音频文件> \
   20 \
   --benchmark 5
 ```
@@ -267,7 +267,7 @@
 - reader 落后时过小会更容易 overrun
 - 过大则增加内存占用和排空时延
 
-### 3. `source.playback_rate`
+### 3. `source_stage.ops[0].params.playback_rate`
 
 - 影响文件输入节奏
 - benchmark 时常用大于 `1.0` 的值

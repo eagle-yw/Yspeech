@@ -29,34 +29,6 @@ namespace yspeech {
 
 namespace {
 
-auto build_stage_capabilities(
-    const PipelineConfig& pipeline_config,
-    const CoreConfig& core_config
-) -> nlohmann::json {
-    nlohmann::json merged = nlohmann::json::array();
-
-    const auto append_capabilities = [&](const nlohmann::json& capabilities) {
-        if (!capabilities.is_array()) {
-            return;
-        }
-        for (const auto& entry : capabilities) {
-            if (!entry.is_object() || !entry.contains("name") || !entry["name"].is_string()) {
-                continue;
-            }
-            auto normalized = entry;
-            if (!normalized.contains("params") || !normalized["params"].is_object()) {
-                normalized["params"] = nlohmann::json::object();
-            }
-            normalized["params"] = pipeline_config.resolve_capability_params(normalized["params"]);
-            merged.push_back(std::move(normalized));
-        }
-    };
-
-    append_capabilities(pipeline_config.capabilities());
-    append_capabilities(core_config.capabilities);
-    return merged;
-}
-
 }
 
 export class EngineRuntime {
@@ -548,74 +520,42 @@ void EngineRuntime::init_components() {
         feature_stage_.emplace();
         asr_stage_.emplace();
         event_stage_.emplace();
-        std::optional<nlohmann::json> feature_stage_params;
+        const auto init_stage = [&](PipelineStageRole role, auto& stage_handle, const auto& configure_instance) {
+            const auto* stage_recipe = builder_config.recipe.stage_by_role(role);
+            if (!stage_recipe || !stage_handle) {
+                return;
+            }
 
-        if (const auto* stage = builder_config.recipe.stage_by_role(PipelineStageRole::Source); stage) {
-            nlohmann::json params = nlohmann::json::object();
-            if (stage->stage_id == "source_stage") {
-                if (config_.contains("source") && config_["source"].is_object()) {
-                    params = config_["source"];
-                }
-                params["__core_id"] = "source";
-                params["core_name"] = stage->core_names.empty()
-                    ? nlohmann::json("PassThroughSource")
-                    : nlohmann::json(stage->core_names.front());
-                params["capabilities"] = nlohmann::json::array();
+            auto params = stage_recipe->init_params.is_object()
+                ? stage_recipe->init_params
+                : nlohmann::json::object();
+            configure_instance(*stage_handle, params);
+        };
+
+        init_stage(PipelineStageRole::Source, source_stage_, [](SourceStage& stage, const nlohmann::json& params) {
+            stage.init(params);
+        });
+        init_stage(PipelineStageRole::Vad, vad_stage_, [this](VadStage& stage, const nlohmann::json& params) {
+            stage.init(params);
+            stage.bind_stats(&stats_);
+        });
+        init_stage(PipelineStageRole::Feature, feature_stage_, [this](FeatureStage& stage, const nlohmann::json& params) {
+            stage.init(params);
+            stage.bind_stats(&stats_);
+        });
+        init_stage(PipelineStageRole::Asr, asr_stage_, [this](AsrStage& stage, nlohmann::json params) {
+            const auto default_core_pool_size = std::size_t{1};
+            if (config_.contains("runtime") && config_["runtime"].is_object()) {
+                params["__core_pool_size"] = std::max<std::size_t>(
+                    1,
+                    config_["runtime"].value("asr_core_pool_size", default_core_pool_size)
+                );
             } else {
-                for (const auto& cfg : pipeline_config_.stages()) {
-                    if (cfg.id() == stage->stage_id && !cfg.ops().empty()) {
-                        params = cfg.ops().front().params.is_null()
-                            ? nlohmann::json::object()
-                            : cfg.ops().front().params;
-                        params["__core_id"] = cfg.ops().front().id;
-                        params["core_name"] = cfg.ops().front().name;
-                        params["capabilities"] = build_stage_capabilities(pipeline_config_, cfg.ops().front());
-                        break;
-                    }
-                }
+                params["__core_pool_size"] = default_core_pool_size;
             }
-            source_stage_->init(params);
-        }
-
-        for (const auto& cfg : pipeline_config_.stages()) {
-            if (const auto* stage = builder_config.recipe.stage_by_role(PipelineStageRole::Vad);
-                stage && cfg.id() == stage->stage_id && !cfg.ops().empty()) {
-                auto params = cfg.ops().front().params.is_null() ? nlohmann::json::object() : cfg.ops().front().params;
-                params["__core_id"] = cfg.ops().front().id;
-                params["core_name"] = cfg.ops().front().name;
-                params["capabilities"] = build_stage_capabilities(pipeline_config_, cfg.ops().front());
-                vad_stage_->init(params);
-                vad_stage_->bind_stats(&stats_);
-            }
-            if (const auto* stage = builder_config.recipe.stage_by_role(PipelineStageRole::Feature);
-                stage && cfg.id() == stage->stage_id && !cfg.ops().empty()) {
-                auto params = cfg.ops().front().params.is_null() ? nlohmann::json::object() : cfg.ops().front().params;
-                params["__core_id"] = cfg.ops().front().id;
-                params["core_name"] = cfg.ops().front().name;
-                params["capabilities"] = build_stage_capabilities(pipeline_config_, cfg.ops().front());
-                feature_stage_params = params;
-                feature_stage_->init(params);
-                feature_stage_->bind_stats(&stats_);
-            }
-            if (const auto* stage = builder_config.recipe.stage_by_role(PipelineStageRole::Asr);
-                stage && cfg.id() == stage->stage_id && !cfg.ops().empty()) {
-                auto params = cfg.ops().front().params.is_null() ? nlohmann::json::object() : cfg.ops().front().params;
-                params["__core_id"] = cfg.ops().front().id;
-                const auto default_core_pool_size = std::size_t{1};
-                if (config_.contains("runtime") && config_["runtime"].is_object()) {
-                    params["__core_pool_size"] = std::max<std::size_t>(
-                        1,
-                        config_["runtime"].value("asr_core_pool_size", default_core_pool_size)
-                    );
-                } else {
-                    params["__core_pool_size"] = default_core_pool_size;
-                }
-                params["model_name"] = cfg.ops().front().name;
-                params["capabilities"] = build_stage_capabilities(pipeline_config_, cfg.ops().front());
-                asr_stage_->init(params);
-                asr_stage_->bind_stats(&stats_);
-            }
-        }
+            stage.init(params);
+            stage.bind_stats(&stats_);
+        });
 
         pipeline_runtime_context_->emit_event = [this](const EngineEvent& event) {
             if (event.kind == EngineEventKind::VadEnd && event.vad_segment.has_value()) {
@@ -687,17 +627,14 @@ void EngineRuntime::init_components() {
             runtime_dag_executor_->set_stage_callback(PipelineStageRole::Asr, asr_callback);
             runtime_dag_executor_->set_stage_callback(PipelineStageRole::Event, event_callback);
         } else if (pipeline_executor_) {
-            pipeline_executor_->set_source_stage(source_callback);
-            pipeline_executor_->set_vad_stage(vad_callback);
-            pipeline_executor_->set_feature_stage(feature_callback);
-            pipeline_executor_->set_asr_stage(asr_callback);
-            pipeline_executor_->set_event_stage(event_callback);
+            pipeline_executor_->set_stage_callback(PipelineStageRole::Source, source_callback);
+            pipeline_executor_->set_stage_callback(PipelineStageRole::Vad, vad_callback);
+            pipeline_executor_->set_stage_callback(PipelineStageRole::Feature, feature_callback);
+            pipeline_executor_->set_stage_callback(PipelineStageRole::Asr, asr_callback);
+            pipeline_executor_->set_stage_callback(PipelineStageRole::Event, event_callback);
         }
-        std::string source_type = "microphone";
-        if (config_.contains("source") && config_["source"].is_object() &&
-            config_["source"].contains("type") && config_["source"]["type"].is_string()) {
-            source_type = config_["source"]["type"].get<std::string>();
-        }
+        auto source_cfg = read_source_config(config_);
+        std::string source_type = source_cfg.value("type", std::string("microphone"));
         if (source_type == "stream") {
             default_frame_source_ = std::make_shared<StreamSource>("stream");
         } else {
@@ -720,11 +657,11 @@ void EngineRuntime::init_components() {
 }
 
 auto EngineRuntime::create_frame_source_from_config() -> std::shared_ptr<IFrameSource> {
-    if (!config_.contains("source") || !config_["source"].is_object()) {
+    auto source_cfg = read_source_config(config_);
+    if (!source_cfg.is_object() || source_cfg.empty()) {
         return nullptr;
     }
 
-    const auto& source_cfg = config_["source"];
     if (!source_cfg.contains("type") || !source_cfg["type"].is_string()) {
         log_warn("Source config missing 'type' field, using default");
         return nullptr;
@@ -734,11 +671,20 @@ auto EngineRuntime::create_frame_source_from_config() -> std::shared_ptr<IFrameS
     
     if (type == "file") {
         if (!source_cfg.contains("path") || !source_cfg["path"].is_string()) {
-            log_warn("File source config missing 'path' field");
+            log_warn(
+                "File source path is not configured; set source_stage.ops[0].params.path or pass an audio path override at runtime"
+            );
             return nullptr;
         }
-        
+
         std::string path = source_cfg["path"].get<std::string>();
+        if (path.empty() || path == "__AUDIO_PATH__") {
+            log_warn(
+                "File source path is a placeholder; pass a real audio path at runtime or update source_stage.ops[0].params.path"
+            );
+            return nullptr;
+        }
+
         double playback_rate = source_cfg.value("playback_rate", 1.0);
         const double effective_playback_rate = offline_mode_ ? 0.0 : playback_rate;
         

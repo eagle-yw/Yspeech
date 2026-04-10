@@ -36,6 +36,7 @@ export struct PipelineStageRecipe {
     RuntimeNodeKind node_kind = RuntimeNodeKind::Linear;
     std::size_t max_concurrency = 1;
     bool enabled = true;
+    nlohmann::json init_params = nlohmann::json::object();
     std::vector<std::string> core_ids;
     std::vector<std::string> core_names;
     std::vector<std::string> depends_on;
@@ -148,6 +149,60 @@ inline auto parse_join_timeout_ms(const nlohmann::json& stage_json) -> std::int6
     return std::max<std::int64_t>(-1, stage_json["join_timeout_ms"].get<std::int64_t>());
 }
 
+inline auto build_stage_capabilities(
+    const PipelineConfig& pipeline_config,
+    const CoreConfig& core_config
+) -> nlohmann::json {
+    nlohmann::json merged = nlohmann::json::array();
+
+    const auto append_capabilities = [&](const nlohmann::json& capabilities) {
+        if (!capabilities.is_array()) {
+            return;
+        }
+        for (const auto& entry : capabilities) {
+            if (!entry.is_object() || !entry.contains("name") || !entry["name"].is_string()) {
+                continue;
+            }
+            auto normalized = entry;
+            if (!normalized.contains("params") || !normalized["params"].is_object()) {
+                normalized["params"] = nlohmann::json::object();
+            }
+            normalized["params"] = pipeline_config.resolve_capability_params(normalized["params"]);
+            merged.push_back(std::move(normalized));
+        }
+    };
+
+    append_capabilities(pipeline_config.capabilities());
+    append_capabilities(core_config.capabilities);
+    return merged;
+}
+
+inline auto make_stage_init_params(const PipelineConfig& pipeline_config, const PipelineStageConfig& stage)
+    -> nlohmann::json {
+    if (stage.ops().empty()) {
+        return nlohmann::json::object();
+    }
+
+    const auto& op = stage.ops().front();
+    auto params = op.params.is_null() ? nlohmann::json::object() : op.params;
+    params["__core_id"] = op.id;
+    params["core_name"] = op.name;
+    params["model_name"] = op.name;
+    params["capabilities"] = build_stage_capabilities(pipeline_config, op);
+    return params;
+}
+
+inline auto make_implicit_source_stage_init_params(const nlohmann::json& raw_config) -> nlohmann::json {
+    nlohmann::json params = nlohmann::json::object();
+    if (raw_config.contains("source") && raw_config["source"].is_object()) {
+        params = raw_config["source"];
+    }
+    params["__core_id"] = "source";
+    params["core_name"] = source_core_name_from_config(raw_config);
+    params["capabilities"] = nlohmann::json::array();
+    return params;
+}
+
 } // namespace detail
 
 export inline auto make_pipeline_runtime_recipe(
@@ -187,6 +242,7 @@ export inline auto make_pipeline_runtime_recipe(
         entry.stage_id = stage.id();
         entry.role = detail::infer_stage_role(stage);
         entry.max_concurrency = stage.max_concurrency();
+        entry.init_params = detail::make_stage_init_params(config, stage);
         if (auto it = stage_dependencies.find(entry.stage_id); it != stage_dependencies.end()) {
             entry.depends_on = it->second;
         }
@@ -212,6 +268,7 @@ export inline auto make_pipeline_runtime_recipe(
         source_stage.stage_id = "source_stage";
         source_stage.role = PipelineStageRole::Source;
         source_stage.max_concurrency = 1;
+        source_stage.init_params = detail::make_implicit_source_stage_init_params(raw_config);
         source_stage.core_ids = {"source"};
         source_stage.core_names = {detail::source_core_name_from_config(raw_config)};
         recipe.stages.insert(recipe.stages.begin(), std::move(source_stage));

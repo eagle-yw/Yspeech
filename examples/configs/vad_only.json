@@ -4,13 +4,14 @@
   "task": "vad",
   "mode": "streaming",
   "log_level": "info",
+  "runtime": {
+    "pipeline_lines": 4,
+    "pipeline_name": "yspeech.streaming.vad_only"
+  },
   "global": {
     "properties": {
       "vad_model": "model/vad/silero_vad.onnx"
     }
-  },
-  "source": {
-    "type": "microphone"
   },
   "frame": {
     "sample_rate": 16000,
@@ -27,7 +28,8 @@
       "ops": [
         {
           "id": "source",
-          "name": "MicrophoneSource"
+          "name": "MicrophoneSource",
+          "params": {}
         }
       ]
     },
